@@ -358,18 +358,21 @@ def create_naver_search_tab():
         search_results_state = gr.State([])
 
         # --- UI 컴포넌트 ---
-        keyword_input = gr.Textbox(
-            label="검색할 행사 키워드를 입력하세요",
-            placeholder="예: 2025 한강 불빛 공연",
-            lines=1
-        )
-        
         with gr.Row():
-            search_button = gr.Button("검색 실행", variant="primary")
-            summarize_button = gr.Button("결과 요약하기")
+            keyword_input = gr.Textbox(
+                label="검색할 행사 키워드를 입력하세요",
+                placeholder="예: 2025 한강 불빛 공연",
+                lines=1,
+                scale=3
+            )
+            search_button = gr.Button("검색 실행", variant="primary", scale=1)
+            summarize_button = gr.Button("결과 요약하기", scale=1)
 
-        summary_output = gr.Markdown(label="블로그 내용 요약")
+        gr.Markdown("--- ")
+        summary_output = gr.Markdown(label="방문객 경험 중심 요약 (GPT-4.1-mini)")
+        image_gallery = gr.Gallery(label="블로그 이미지 모아보기", columns=6, height="auto")
         
+        gr.Markdown("--- ")
         with gr.Row():
             raw_json_output = gr.Textbox(
                 label="Raw JSON 결과", 
@@ -382,7 +385,7 @@ def create_naver_search_tab():
         search_button.click(
             fn=search_naver_reviews_and_scrape,
             inputs=[keyword_input],
-            outputs=[raw_json_output, formatted_output, search_results_state]
+            outputs=[raw_json_output, formatted_output, search_results_state, image_gallery]
         )
 
         summarize_button.click(
