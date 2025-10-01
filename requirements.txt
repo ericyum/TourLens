@@ -1,0 +1,7 @@
+gradio
+python-dotenv
+pandas
+playwright
+google-generativeai
+requests
+matplotlib

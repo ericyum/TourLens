@@ -37,6 +37,8 @@ from modules.trend_analyzer import (
 )
 # 서울 관광 API 모듈
 from modules.seoul_search.seoul_api import get_all_seoul_data
+# 네이버 검색 모듈
+from modules.naver_search import search_naver_reviews_and_scrape, summarize_blog_contents_stream
 
 
 # --- 서울시 관광 정보 검색 UI 및 기능 ---
@@ -347,10 +349,53 @@ def create_area_search_tab():
         radio_list_area.change(fn=get_details, inputs=[radio_list_area, places_info_state_area], outputs=[common_raw_a, common_pretty_a, intro_raw_a, intro_pretty_a, info_raw_a, info_pretty_a])
     return tab
 
+def create_naver_search_tab():
+    """'네이버 검색 (임시)' 탭의 UI를 생성합니다."""
+    with gr.Blocks() as tab:
+        gr.Markdown("### 네이버 블로그 후기 검색 및 요약")
+        
+        # --- 상태 변수 ---
+        search_results_state = gr.State([])
+
+        # --- UI 컴포넌트 ---
+        keyword_input = gr.Textbox(
+            label="검색할 행사 키워드를 입력하세요",
+            placeholder="예: 2025 한강 불빛 공연",
+            lines=1
+        )
+        
+        with gr.Row():
+            search_button = gr.Button("검색 실행", variant="primary")
+            summarize_button = gr.Button("결과 요약하기")
+
+        summary_output = gr.Markdown(label="블로그 내용 요약")
+        
+        with gr.Row():
+            raw_json_output = gr.Textbox(
+                label="Raw JSON 결과", 
+                lines=20, 
+                interactive=False
+            )
+            formatted_output = gr.Markdown()
+            
+        # --- 이벤트 핸들러 ---
+        search_button.click(
+            fn=search_naver_reviews_and_scrape,
+            inputs=[keyword_input],
+            outputs=[raw_json_output, formatted_output, search_results_state]
+        )
+
+        summarize_button.click(
+            fn=summarize_blog_contents_stream,
+            inputs=[search_results_state],
+            outputs=[summary_output]
+        )
+    return tab
+
 # --- Gradio TabbedInterface를 사용하여 전체 UI 구성 ---
 demo = gr.TabbedInterface(
-    [create_location_search_tab(), create_area_search_tab(), create_seoul_search_ui()],
-    tab_names=["내 위치로 검색", "지역/카테고리별 검색 (기존 TourAPI)", "서울시 관광지 검색 (신규)"],
+    [create_location_search_tab(), create_area_search_tab(), create_seoul_search_ui(), create_naver_search_tab()],
+    tab_names=["내 위치로 검색", "지역/카테고리별 검색 (기존 TourAPI)", "서울시 관광지 검색 (신규)", "네이버 검색 (임시)"],
     title="TourLens 관광 정보 앱"
 )
 
