@@ -6,3 +6,5 @@ google-generativeai
 requests
 matplotlib
 langchain_openai
+scikit-learn
+nltk

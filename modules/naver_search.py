@@ -7,6 +7,17 @@ import shutil
 from playwright.async_api import async_playwright
 from modules.naver_review import search_naver_blog
 from langchain_openai import ChatOpenAI
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import nltk
+from nltk.tokenize import sent_tokenize
+
+# NLTK 문장 토크나이저 다운로드 (최초 1회 실행 필요)
+try:
+    nltk.data.find('tokenizers/punkt')
+except nltk.downloader.DownloadError:
+    nltk.download('punkt')
 
 
 # --- 블로그 스크래핑 ---
@@ -289,3 +300,66 @@ def summarize_blog_contents_stream(reviews_data, progress=gr.Progress(track_tqdm
 
     except Exception as e:
         yield f"OpenAI API 2차 요약 중 오류가 발생했습니다: {e}"
+
+
+# --- 챗봇 답변 생성 함수 (LLM 기반 스트리밍) ---
+def answer_question_from_reviews_stream(question: str, reviews_data: list):
+    """
+    ChatOpenAI(LLM)를 사용하여 블로그 리뷰 내용 기반으로 질문에 답변하고 결과를 스트리밍합니다.
+    """
+    if not question:
+        yield "질문을 입력해주세요."
+        return
+    if not reviews_data:
+        yield "답변을 찾을 수 있는 블로그 후기 내용이 없습니다."
+        return
+
+    # 1. LLM 모델 초기화
+    if "OPENAI_API_KEY" not in os.environ:
+        yield "오류: OPENAI_API_KEY 환경 변수가 설정되지 않았습니다. .env 파일을 확인해주세요."
+        return
+    try:
+        gpt = ChatOpenAI(temperature=0, model_name="gpt-4.1-mini")
+    except Exception as e:
+        yield f"ChatOpenAI 모델 초기화 중 오류 발생: {e}"
+        return
+
+    # 2. 컨텍스트로 사용할 블로그 본문 전체 합치기
+    full_text = ""
+    for i, review in enumerate(reviews_data):
+        content = review.get("content", "")
+        if "본문 내용을 찾을 수 없습니다" in content or "페이지에 접근하는 중 오류" in content:
+            continue
+        full_text += f"--- 블로그 후기 {i+1} ---\n\n{content}\n\n"
+
+    if not full_text.strip():
+        yield "답변을 생성할 유효한 블로그 본문이 없습니다."
+        return
+
+    # 3. LLM에 전달할 프롬프트 구성
+    prompt = f"""
+    당신은 다음 '블로그 후기 모음' 내용을 완벽하게 숙지한 친절한 안내원입니다.
+    사용자의 '질문'에 대해, 반드시 '블로그 후기 모음' 안에서만 근거를 찾아 답변해야 합니다.
+    후기 내용에 질문에 대한 정보가 명확하게 없는 경우, "후기 내용만으로는 알 수 없습니다."라고 솔직하게 답변해주세요.
+    절대로 당신의 기존 지식을 사용하거나 정보를 추측해서는 안 됩니다.
+
+    --- 블로그 후기 모음 ---
+    {full_text}
+    ---
+
+    사용자의 질문: "{question}"
+
+    --- 답변 (블로그 후기 기반) ---
+    """
+
+    # 4. LLM 스트리밍 호출 및 결과 반환
+    try:
+        answer_stream = gpt.stream(prompt)
+
+        full_answer = ""
+        for chunk in answer_stream:
+            full_answer += chunk.content
+            yield full_answer
+            
+    except Exception as e:
+        yield f"챗봇 답변 생성 중 오류가 발생했습니다: {e}"

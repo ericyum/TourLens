@@ -38,7 +38,7 @@ from modules.trend_analyzer import (
 # 서울 관광 API 모듈
 from modules.seoul_search.seoul_api import get_all_seoul_data
 # 네이버 검색 모듈
-from modules.naver_search import search_naver_reviews_and_scrape, summarize_blog_contents_stream
+from modules.naver_search import search_naver_reviews_and_scrape, summarize_blog_contents_stream, answer_question_from_reviews_stream
 
 
 # --- 서울시 관광 정보 검색 UI 및 기능 ---
@@ -372,7 +372,17 @@ def create_naver_search_tab():
         summary_output = gr.Markdown(label="방문객 경험 중심 요약 (GPT-4.1-mini)")
         image_gallery = gr.Gallery(label="블로그 이미지 모아보기", columns=6, height="auto")
         
-        gr.Markdown("--- ")
+        gr.Markdown("---")
+        gr.Markdown("### 💬 후기 기반 챗봇")
+        gr.Markdown("블로그 후기 내용을 바탕으로 궁금한 점을 질문해보세요. (예: 주차 정보, 유모차 끌기 편한가요?, 비 오는 날 가도 괜찮나요?)")
+        
+        with gr.Row():
+            question_input = gr.Textbox(label="질문 입력", placeholder="질문을 입력하세요...", scale=4)
+            ask_button = gr.Button("질문하기", scale=1)
+        
+        answer_output = gr.Markdown(label="챗봇 답변")
+
+        gr.Markdown("---")
         with gr.Row():
             raw_json_output = gr.Textbox(
                 label="Raw JSON 결과", 
@@ -392,6 +402,12 @@ def create_naver_search_tab():
             fn=summarize_blog_contents_stream,
             inputs=[search_results_state],
             outputs=[summary_output]
+        )
+
+        ask_button.click(
+            fn=answer_question_from_reviews_stream,
+            inputs=[question_input, search_results_state],
+            outputs=[answer_output]
         )
     return tab
 
