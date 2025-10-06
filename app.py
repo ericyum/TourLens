@@ -377,8 +377,24 @@ def parse_xml_to_dict(xml_string: str) -> dict:
     except (ET.ParseError, TypeError):
         return {}
 
+def parse_xml_to_ordered_list(xml_string: str) -> list[tuple[str, str]]:
+    """Parses an XML string from the API into an ordered list of (key, value) tuples."""
+    if not xml_string or "<error>" in xml_string or not xml_string.strip().startswith('<?xml'):
+        return []
+    try:
+        root = ET.fromstring(xml_string)
+        item_element = root.find('.//body/items/item')
+        if item_element is None:
+            return []
+        
+        details = []
+        for child in item_element:
+            if child.text and child.text.strip():
+                clean_text = re.sub(r'<.*?>', '', child.text)
+                details.append((child.tag, clean_text.strip()))
+        return details
     except (ET.ParseError, TypeError):
-        return {}
+        return []
 
 async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=True)):
     """Fetches ALL items, gets full details including initial search XML, and saves to a CSV file with specific column order."""
