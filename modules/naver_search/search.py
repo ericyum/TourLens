@@ -5,7 +5,7 @@ import os
 import requests
 import shutil
 from playwright.async_api import async_playwright
-from modules.naver_review import search_naver_blog
+from modules.naver_search.naver_review import search_naver_blog
 from langchain_openai import ChatOpenAI
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -16,7 +16,7 @@ from nltk.tokenize import sent_tokenize
 # NLTK 문장 토크나이저 다운로드 (최초 1회 실행 필요)
 try:
     nltk.data.find('tokenizers/punkt')
-except nltk.downloader.DownloadError:
+except LookupError:
     nltk.download('punkt')
 
 

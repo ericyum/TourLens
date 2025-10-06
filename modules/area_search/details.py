@@ -4,7 +4,7 @@ from utils import (
     common_params, session, BASE_URL, 
     format_json_to_clean_string, create_trend_plot
 )
-from modules.naver_review import search_naver_blog, get_naver_trend
+from modules.naver_search.naver_review import search_naver_blog, get_naver_trend
 
 def get_details(selected_title, places_info):
     if not selected_title or not places_info:

@@ -9,7 +9,7 @@ import io
 from PIL import Image # PIL 임포트 추가
 
 from utils import common_params, session, BASE_URL, get_api_items, is_key_excluded
-from modules.naver_review import get_naver_trend, search_naver_blog
+from modules.naver_search.naver_review import get_naver_trend, search_naver_blog
 from modules.area_search.controls import AREA_CODES, CONTENT_TYPE_CODES
 
 # --- 신규 추가: 단일 아이템 분석 및 결과 반환 함수 ---

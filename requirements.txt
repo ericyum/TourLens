@@ -8,3 +8,6 @@ matplotlib
 langchain_openai
 scikit-learn
 nltk
+beautifulsoup4
+bs4
+browser-cookie3

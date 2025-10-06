@@ -16,7 +16,7 @@ class CustomAdapter(requests.adapters.HTTPAdapter):
         kwargs['ssl_context'] = context
         return super(CustomAdapter, self).init_poolmanager(*args, **kwargs)
 
-TOUR_API_KEY = os.getenv("TOUR_API_KTY")
+TOUR_API_KEY = os.getenv("TOUR_API_KEY")
 API_KEY = quote(TOUR_API_KEY) if TOUR_API_KEY else ""
 BASE_URL = "https://apis.data.go.kr/B551011/KorService2/"
 session = requests.Session()
