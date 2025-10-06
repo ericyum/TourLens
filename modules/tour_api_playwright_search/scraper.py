@@ -59,24 +59,66 @@ async def _navigate_to_results_page(page: Page, language, province, sigungu, tou
     await page.locator('div.search-filter button:has-text("검색")').click()
     await page.wait_for_selector('textarea#ResponseXML', timeout=30000)
 
-async def _go_to_page(page: Page, target_page: int):
-    if target_page <= 1: return
-    for _ in range(30):
-        current_page_text = await page.locator("div.paging button.on").text_content(timeout=5000)
-        if int(current_page_text) == target_page: return
-        if await page.locator(f"div.paging button[value='{target_page}']").is_visible():
-            await page.locator(f"div.paging button[value='{target_page}']").click()
-        elif target_page > int(current_page_text):
-            await page.locator('div.paging button[name="next"]').click()
-        else:
-            await page.locator('div.paging button[name="prev"]').click()
-        await page.wait_for_load_state('networkidle')
+async def _go_to_page(page: Page, target_page: int, total_pages: int = 0):
+    target_page = int(target_page)
+    if target_page <= 1:
+        return
 
-async def get_search_results(language, province, sigungu, tourism_type, cat1, cat2, cat3, pageNo=1, temp_dir: str = ""):
+    # Loop to navigate to the target page
+    for _ in range(2000): # Generous attempt limit as requested by user
+        try:
+            current_page_loc = page.locator("div.paging button.on")
+            current_page = int(await current_page_loc.get_attribute('value'))
+
+            if current_page == target_page:
+                # Before returning, do a final check to ensure XML data is for the current page
+                await page.wait_for_function(f"() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>{current_page}</pageNo>')", timeout=5000)
+                return  # Success!
+        except Exception as e:
+            await page.screenshot(path="debug_nav_get_current_page_failed.png")
+            raise Exception(f"Could not determine current page or XML was stale. Error: {e}")
+
+        old_xml = await page.locator("textarea#ResponseXML").input_value()
+        
+        button_to_click = None
+        target_button = page.locator(f"div.paging button[value='{target_page}']")
+
+        if await target_button.is_visible():
+            # Priority 1: Target page number is visible. Click it directly.
+            button_to_click = target_button
+        elif total_pages > 0 and target_page == total_pages:
+            # Priority 2: We need to go to the very last page. Use the 'last' button.
+            button_to_click = page.locator('div.paging button[name="last"]')
+        elif current_page < target_page:
+            # Priority 3: Target is ahead. Click 'next' to show the next block of pages.
+            button_to_click = page.locator('div.paging button[name="next"]')
+        else: # current_page > target_page
+            # Priority 4: Target is behind. Click 'prev' to show the previous block.
+            button_to_click = page.locator('div.paging button[name="prev"]')
+
+        if not button_to_click or not await button_to_click.is_visible():
+             await page.screenshot(path="debug_nav_no_button_found.png")
+             raise Exception(f"Pagination logic failed: could not find a button to click to reach page {target_page}.")
+
+        # Perform the click and wait for the data to change. This is the crucial, unified wait.
+        try:
+            await button_to_click.click()
+            await page.wait_for_function(
+                "(oldXml) => document.querySelector('textarea#ResponseXML').value !== oldXml",
+                arg=old_xml,
+                timeout=15000
+            )
+        except Exception as e:
+            await page.screenshot(path="debug_final_nav_failed.png")
+            raise Exception(f"A pagination click failed to update content. Target: {target_page}, Current: {current_page}") from e
+
+    raise Exception(f"Failed to navigate to page {target_page} after 2000 attempts.")
+
+async def get_search_results(language, province, sigungu, tourism_type, cat1, cat2, cat3, pageNo=1, temp_dir: str = "", totalPages: int = 0):
     p, browser, page = await _get_page_context()
     try:
         await _navigate_to_results_page(page, language, province, sigungu, tourism_type, cat1, cat2, cat3)
-        if pageNo > 1: await _go_to_page(page, pageNo)
+        if pageNo > 1: await _go_to_page(page, pageNo, totalPages)
         await page.wait_for_function("document.querySelector('textarea#ResponseXML').value.length > 10", timeout=15000)
         xml_content = await page.locator("textarea#ResponseXML").input_value()
         root = ET.fromstring(xml_content)
@@ -84,10 +126,12 @@ async def get_search_results(language, province, sigungu, tourism_type, cat1, ca
         items = root.findall('.//body/items/item')
         results = []
         for item in items:
+            item_xml_string = ET.tostring(item, encoding='unicode')
             results.append({
                 "title": item.findtext('title'), "image": item.findtext('firstimage'),
                 "mapx": item.findtext('mapx'), "mapy": item.findtext('mapy'),
-                "contentid": item.findtext('contentid'), "contenttypeid": item.findtext('contenttypeid')
+                "contentid": item.findtext('contentid'), "contenttypeid": item.findtext('contenttypeid'),
+                "initial_item_xml": item_xml_string
             })
         req_url = await page.locator("p#RequestURL").text_content()
         return results, req_url, xml_content, total_count
@@ -98,8 +142,11 @@ async def get_item_detail_xml(params):
     p, browser, page = await _get_page_context()
     try:
         await _navigate_to_results_page(page, **{k: v for k, v in params.items() if k in ['language', 'province', 'sigungu', 'tourism_type', 'cat1', 'cat2', 'cat3']})
-        if params.get("pageNo", 1) > 1:
-            await _go_to_page(page, params["pageNo"])
+        
+        page_no = params.get("pageNo", 1)
+        if page_no > 1:
+            # We don't know the total pages here, so we pass 0 and rely on the forward/backward logic.
+            await _go_to_page(page, page_no, 0)
 
         await page.wait_for_function("document.querySelector('textarea#ResponseXML').value.length > 10", timeout=15000)
         xml_content = await page.locator("textarea#ResponseXML").input_value()

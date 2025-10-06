@@ -45,6 +45,7 @@ import asyncio
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 import requests
+import re
 
 
 # --- 서울시 관광 정보 검색 UI 및 기능 ---
@@ -357,6 +358,144 @@ def create_area_search_tab():
 
 
 
+def parse_xml_to_dict(xml_string: str) -> dict:
+    """Parses an XML string from the API into a flat dictionary."""
+    if not xml_string or "<error>" in xml_string or not xml_string.strip().startswith('<?xml'):
+        return {}
+    try:
+        root = ET.fromstring(xml_string)
+        item_element = root.find('.//body/items/item')
+        if item_element is None:
+            return {}
+        
+        details = {}
+        for child in item_element:
+            if child.text and child.text.strip():
+                clean_text = re.sub(r'<.*?>', '', child.text)
+                details[child.tag] = clean_text.strip()
+        return details
+    except (ET.ParseError, TypeError):
+        return {}
+
+    except (ET.ParseError, TypeError):
+        return {}
+
+async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=True)):
+    """Fetches ALL items, gets full details including initial search XML, and saves to a CSV file with specific column order."""
+    ITEMS_PER_PAGE = 12
+    TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
+    os.makedirs(TEMP_DIR, exist_ok=True)
+
+    progress(0, desc="Getting total number of items...")
+    try:
+        initial_params = search_params.copy()
+        if initial_params.get("sigungu") == "전체": initial_params["sigungu"] = None
+        if initial_params.get("cat1") == "선택 안함": initial_params["cat1"] = None
+        if initial_params.get("cat2") == "선택 안함": initial_params["cat2"] = None
+        if initial_params.get("cat3") == "선택 안함": initial_params["cat3"] = None
+
+        _, _, _, total_count = await scraper.get_search_results(**initial_params, pageNo=1, temp_dir=TEMP_DIR)
+        if total_count == 0:
+            gr.Info("No items to export.")
+            return None
+        total_pages = math.ceil(total_count / ITEMS_PER_PAGE)
+    except Exception as e:
+        gr.Error(f"Failed to get total item count. Error: {e}")
+        return None
+
+    all_items = []
+    progress(0.1, desc="Fetching item lists from all pages...")
+    for page_num in progress.tqdm(range(1, total_pages + 1), desc=f"Fetching {total_pages} pages"):
+        try:
+            results, _, _, _ = await scraper.get_search_results(**initial_params, pageNo=page_num, temp_dir=TEMP_DIR, totalPages=total_pages)
+            all_items.extend(results)
+        except Exception as e:
+            print(f"Warning: Failed to fetch page {page_num}. Error: {e}")
+            continue
+    
+    if not all_items:
+        gr.Info("Could not fetch any item lists.")
+        return None
+
+    all_attraction_details = []
+    simple_search_keys, common_info_keys, intro_info_keys, repeat_info_keys = [], [], [], []
+    seen_keys = set()
+
+    def add_key(key, key_list):
+        if key not in seen_keys:
+            seen_keys.add(key)
+            key_list.append(key)
+
+    tabs_to_fetch = [
+        ("공통정보", common_info_keys), 
+        ("소개정보", intro_info_keys), 
+        ("반복정보", repeat_info_keys)
+    ]
+
+    for item in progress.tqdm(all_items, desc="Collecting and ordering details for each attraction"):
+        content_id = item.get("contentid")
+        if not content_id: continue
+
+        combined_details = {}
+
+        initial_xml = item.get("initial_item_xml")
+        if initial_xml:
+            # The initial XML is a string representation of a single <item> tag
+            # To parse it, we need to wrap it in a dummy root structure.
+            try:
+                root = ET.fromstring(f'<root>{initial_xml}</root>')
+                simple_item_element = root.find('item')
+                if simple_item_element is not None:
+                    for child in simple_item_element:
+                        if child.text and child.text.strip():
+                            add_key(child.tag, simple_search_keys)
+                            combined_details[child.tag] = child.text.strip()
+            except ET.ParseError:
+                print(f"Could not parse initial_item_xml for {content_id}")
+
+        detail_params = initial_params.copy()
+        detail_params['contentid'] = content_id
+
+        for tab_name, key_list in tabs_to_fetch:
+            detail_params["tab_name"] = tab_name
+            try:
+                xml_string = await scraper.get_item_detail_xml(detail_params)
+                item_details_list = parse_xml_to_ordered_list(xml_string)
+                for key, value in item_details_list:
+                    add_key(key, key_list)
+                    combined_details[key] = value
+            except Exception as e:
+                print(f"Error fetching tab '{tab_name}' for contentid '{content_id}': {e}")
+                continue
+        
+        all_attraction_details.append(combined_details)
+
+    if not all_attraction_details:
+        gr.Info("No details could be collected.")
+        return None
+
+    progress(0.9, desc="Creating CSV file with specified order...")
+    
+    final_ordered_columns = simple_search_keys + common_info_keys + intro_info_keys + repeat_info_keys
+    
+    df = pd.DataFrame(all_attraction_details)
+    
+    existing_ordered_columns = [col for col in final_ordered_columns if col in df.columns]
+    df = df[existing_ordered_columns]
+
+    if 'homepage' in df.columns:
+        df['homepage'] = df['homepage'].apply(lambda x: re.search(r'href=[""](.*?)[""]', str(x)).group(1) if re.search(r'href=[""](.*?)[""]', str(x)) else x)
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv', prefix='tour_details_all_', encoding='utf-8-sig') as temp_f:
+            df.to_csv(temp_f.name, index=False)
+            gr.Info("CSV file with all items has been created successfully.")
+            return temp_f.name
+    except Exception as e:
+        gr.Error(f"Error saving CSV file: {e}")
+        return None
+
+
 def create_tour_api_playwright_tab():
     """'Tour API 직접 조회 (Playwright)' 탭의 UI를 생성합니다."""
     # --- Constants ---
@@ -388,6 +527,8 @@ def create_tour_api_playwright_tab():
         current_gallery_data = gr.State([])
         selected_item_info = gr.State({})
 
+        DEFAULT_LARGE_CATEGORIES = ["선택 안함", "자연", "인문(문화/예술/역사)", "레포츠", "쇼핑", "음식", "숙박", "추천코스"]
+
         gr.Markdown("# TourAPI 4.0 체험 (Playwright + Gradio)")
         gr.Markdown("필터를 선택하고 관광 정보를 검색해보세요.")
 
@@ -396,14 +537,16 @@ def create_tour_api_playwright_tab():
                 language_dropdown = gr.Dropdown(label="언어", choices=list(scraper.LANGUAGE_MAP.keys()), value="한국어", interactive=True)
                 province_dropdown = gr.Dropdown(label="광역시/도", choices=["전국", "서울", "인천", "대전", "대구", "광주", "부산", "울산", "세종특별자치시", "경기도", "강원특별자치도", "충청북도", "충청남도", "경상북도", "경상남도", "전북특별자치도", "전라남도", "제주특별자치도"], value="전국", interactive=True)
                 sigungu_dropdown = gr.Dropdown(label="시/군/구", choices=[], interactive=True)
-                tourism_type_dropdown = gr.Dropdown(label="관광타입", choices=["관광지", "문화시설", "축제공연행사", "여행코스", "레포츠", "숙박", "쇼핑", "음식점"], value="관광지", interactive=True)
-                large_category_dropdown = gr.Dropdown(label="서비스 분류 (대분류)", choices=[], interactive=True)
+                tourism_type_dropdown = gr.Dropdown(label="관광타입", choices=["선택 안함", "관광지", "문화시설", "축제공연행사", "여행코스", "레포츠", "숙박", "쇼핑", "음식점"], value="선택 안함", interactive=True)
+                large_category_dropdown = gr.Dropdown(label="서비스 분류 (대분류)", choices=DEFAULT_LARGE_CATEGORIES, value="선택 안함", interactive=True)
                 medium_category_dropdown = gr.Dropdown(label="서비스 분류 (중분류)", choices=[], interactive=True)
                 small_category_dropdown = gr.Dropdown(label="서비스 분류 (소분류)", choices=[], interactive=True)
                 search_button = gr.Button("검색", variant="primary")
+                export_csv_button = gr.Button("결과 전체 CSV 저장")
             
             with gr.Column(scale=3):
                 status_output = gr.Textbox(label="상태", interactive=False)
+                csv_output_file = gr.File(label="CSV 다운로드", interactive=False)
                 results_output = gr.Gallery(label="검색 결과", show_label=False, elem_id="gallery", columns=4, height="auto", object_fit="contain", preview=True)
                 
                 with gr.Row(elem_id="pagination", variant="panel"):
@@ -447,7 +590,9 @@ def create_tour_api_playwright_tab():
             except Exception: return gr.update(choices=[], value=None)
 
         async def update_large_category_dropdown(tourism_type):
-            if not tourism_type: return gr.update(choices=[], value=None)
+            if not tourism_type or tourism_type == "선택 안함":
+                return gr.update(choices=DEFAULT_LARGE_CATEGORIES, value="선택 안함")
+            
             options = await scraper.get_large_category_options(tourism_type)
             return gr.update(choices=["선택 안함"] + options, value="선택 안함")
 
@@ -461,32 +606,84 @@ def create_tour_api_playwright_tab():
             options = await scraper.get_small_category_options(tourism_type, large_category, medium_category)
             return gr.update(choices=["선택 안함"] + options, value="선택 안함")
 
-        async def process_search(params, page_num):
+        async def process_search(params, page_num, total_pages=0):
             page_num = int(page_num)
-            yield {status_output: f"{page_num} 페이지를 검색합니다...", results_output: [], detail_view_column: gr.update(visible=False)}
+            
+            # Yield a full list of 13 values to match the `search_outputs` length
+            yield [
+                f"{page_num} 페이지를 검색합니다...", # status_output
+                [], # results_output
+                gr.update(), # api_accordion
+                gr.update(), # request_url_output
+                gr.update(), # response_xml_output
+                gr.update(), # search_params
+                gr.update(), # current_page
+                gr.update(), # total_pages
+                gr.update(), # page_number_input
+                gr.update(), # total_pages_output
+                gr.update(), # current_gallery_data
+                gr.update(visible=False), # detail_view_column
+                None, # csv_output_file
+            ]
+
             try:
                 search_args = params.copy()
                 if search_args.get("sigungu") == "전체": search_args["sigungu"] = None
+                if search_args.get("tourism_type") == "선택 안함": search_args["tourism_type"] = None
                 if search_args.get("cat1") == "선택 안함": search_args["cat1"] = None
                 if search_args.get("cat2") == "선택 안함": search_args["cat2"] = None
                 if search_args.get("cat3") == "선택 안함": search_args["cat3"] = None
 
-                results, req_url, xml_res, total_count = await scraper.get_search_results(**search_args, pageNo=page_num, temp_dir=TEMP_DIR)
-                total_pages_val = math.ceil(total_count / ITEMS_PER_PAGE) if total_count > 0 else 1
+                results, req_url, xml_res, total_count = await scraper.get_search_results(**search_args, pageNo=page_num, temp_dir=TEMP_DIR, totalPages=total_pages)
+                
+                if page_num == 1:
+                    total_pages_val = math.ceil(total_count / ITEMS_PER_PAGE) if total_count > 0 else 1
+                else:
+                    total_pages_val = total_pages
+
                 gallery_data = [(item['image'] if item.get('image') else NO_IMAGE_PLACEHOLDER_PATH, item['title']) for item in results]
-                update_dict = {status_output: f"총 {total_count}개 검색 완료 (페이지 {page_num}/{total_pages_val})", results_output: gallery_data,
-                               page_number_input: page_num, total_pages_output: f"/ {total_pages_val}", api_accordion: gr.update(visible=True),
-                               request_url_output: req_url, response_xml_output: xml_res, current_page: page_num,
-                               total_pages: total_pages_val, search_params: params, current_gallery_data: results,
-                               detail_view_column: gr.update(visible=False)}
-                if not results: update_dict[status_output] = "검색 결과가 없습니다."
-                yield update_dict
+                
+                status_message = f"총 {total_count}개 검색 완료 (페이지 {page_num}/{total_pages_val})"
+                if not results: 
+                    status_message = "검색 결과가 없습니다."
+
+                # Yield a full list of 13 values
+                yield [
+                    status_message, # status_output
+                    gallery_data, # results_output
+                    gr.update(visible=True), # api_accordion
+                    req_url, # request_url_output
+                    xml_res, # response_xml_output
+                    params, # search_params
+                    page_num, # current_page
+                    total_pages_val, # total_pages
+                    page_num, # page_number_input
+                    f"/ {total_pages_val}", # total_pages_output
+                    results, # current_gallery_data
+                    gr.update(visible=False), # detail_view_column
+                    None # csv_output_file
+                ]
             except Exception as e:
-                yield {status_output: f"검색 중 오류 발생: {e}", detail_view_column: gr.update(visible=False)}
+                # Yield a full list of 13 values on error
+                yield [
+                    f"검색 중 오류 발생: {e}", # status_output
+                    [], # results_output
+                    gr.update(), # api_accordion
+                    gr.update(), # request_url_output
+                    gr.update(), # response_xml_output
+                    gr.update(), # search_params
+                    gr.update(), # current_page
+                    gr.update(), # total_pages
+                    gr.update(), # page_number_input
+                    gr.update(), # total_pages_output
+                    gr.update(), # current_gallery_data
+                    gr.update(visible=False), # detail_view_column
+                    None, # csv_output_file
+                ]
 
         async def initial_search(lang, prov, sig, tour, c1, c2, c3):
             params = {"language": lang, "province": prov, "sigungu": sig, "tourism_type": tour, "cat1": c1, "cat2": c2, "cat3": c3}
-            async for update in process_search(params, 1): yield update
+            async for update in process_search(params, 1, 0): yield update
 
         async def change_page(page_num, stored_params):
             async for update in process_search(stored_params, int(page_num)): yield update
@@ -546,6 +743,8 @@ def create_tour_api_playwright_tab():
             title = selected_item['title']
             
             info_for_tabs = s_params.copy()
+            if info_for_tabs.get("province") == "전국": info_for_tabs["province"] = None
+            if info_for_tabs.get("tourism_type") == "선택 안함": info_for_tabs["tourism_type"] = None
             if info_for_tabs.get("sigungu") == "전체": info_for_tabs["sigungu"] = None
             if info_for_tabs.get("cat1") == "선택 안함": info_for_tabs["cat1"] = None
             if info_for_tabs.get("cat2") == "선택 안함": info_for_tabs["cat2"] = None
@@ -621,7 +820,7 @@ def create_tour_api_playwright_tab():
         search_inputs = [language_dropdown, province_dropdown, sigungu_dropdown, tourism_type_dropdown, 
                          large_category_dropdown, medium_category_dropdown, small_category_dropdown]
         search_outputs = [status_output, results_output, api_accordion, request_url_output, response_xml_output, 
-                          search_params, current_page, total_pages, page_number_input, total_pages_output, current_gallery_data, detail_view_column]
+                          search_params, current_page, total_pages, page_number_input, total_pages_output, current_gallery_data, detail_view_column, csv_output_file]
         
         detail_outputs = [status_output, detail_view_column, detail_title, detail_image, detail_overview, 
                           detail_info_table, selected_item_info, map_group, 
@@ -633,11 +832,27 @@ def create_tour_api_playwright_tab():
         medium_category_dropdown.change(update_small_category_dropdown, inputs=[tourism_type_dropdown, large_category_dropdown, medium_category_dropdown], outputs=small_category_dropdown)
 
         search_button.click(fn=initial_search, inputs=search_inputs, outputs=search_outputs, queue=True)
-        first_page_button.click(fn=lambda p: change_page(1, p), inputs=[search_params], outputs=search_outputs, queue=True)
-        prev_page_button.click(fn=lambda cp, p: change_page(max(1, cp - 1), p), inputs=[current_page, search_params], outputs=search_outputs, queue=True)
-        next_page_button.click(fn=lambda cp, tp, p: change_page(min(cp + 1, tp), p), inputs=[current_page, total_pages, search_params], outputs=search_outputs, queue=True)
-        last_page_button.click(fn=lambda tp, p: change_page(tp, p), inputs=[total_pages, search_params], outputs=search_outputs, queue=True)
-        page_number_input.submit(fn=lambda pn, p: change_page(pn, p), inputs=[page_number_input, search_params], outputs=search_outputs, queue=True)
+        export_csv_button.click(fn=export_details_to_csv, inputs=[search_params], outputs=[csv_output_file], queue=True)
+
+        async def change_page(page_num, stored_params, total_pages=0):
+            async for update in process_search(stored_params, int(page_num), total_pages): yield update
+
+        async def go_to_first_page(p):
+            async for update in change_page(1, p, 0): yield update
+        async def go_to_prev_page(current_page_num, tp, p):
+            async for update in change_page(max(1, int(current_page_num) - 1), p, tp): yield update
+        async def go_to_next_page(current_page_num, tp, p):
+            async for update in change_page(min(int(current_page_num) + 1, tp), p, tp): yield update
+        async def go_to_last_page(tp, p):
+            async for update in change_page(tp, p, tp): yield update
+        async def go_to_specific_page(pn, tp, p):
+            async for update in change_page(pn, p, tp): yield update
+
+        first_page_button.click(fn=go_to_first_page, inputs=[search_params], outputs=search_outputs, queue=True)
+        prev_page_button.click(fn=go_to_prev_page, inputs=[page_number_input, total_pages, search_params], outputs=search_outputs, queue=True)
+        next_page_button.click(fn=go_to_next_page, inputs=[page_number_input, total_pages, search_params], outputs=search_outputs, queue=True)
+        last_page_button.click(fn=go_to_last_page, inputs=[total_pages, search_params], outputs=search_outputs, queue=True)
+        page_number_input.submit(fn=go_to_specific_page, inputs=[page_number_input, total_pages, search_params], outputs=search_outputs, queue=True)
 
         results_output.select(fn=show_initial_details, inputs=[search_params, current_gallery_data, current_page], outputs=detail_outputs, queue=True)
 
