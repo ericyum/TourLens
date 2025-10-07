@@ -88,8 +88,13 @@ async def get_search_results(pageNo=1, temp_dir: str = "", totalPages: int = 0, 
     try:
         await _navigate_to_results_page(page, **kwargs)
         
-        search_button_locator = page.get_by_role("button", name="검색", exact=True)
-        await search_button_locator.wait_for(state='visible')
+        # ▼▼▼▼▼ 최종 수정 코드 ▼▼▼▼▼
+        # 가장 간단하고 확실한 선택자로 변경
+        search_button_locator = page.get_by_role('button', name='검색', exact=True)
+        
+        # 불필요한 wait_for 라인 삭제. .click()이 알아서 보이는 버튼을 기다려 클릭함.
+        # await search_button_locator.wait_for(state='visible')
+        # ▲▲▲▲▲ 최종 수정 코드 ▲▲▲▲▲
 
         api_url_pattern = "/KorService2/locationBasedList2" if kwargs.get("search_type") == "location" else "/KorService2/areaBasedList2"
 
@@ -97,6 +102,7 @@ async def get_search_results(pageNo=1, temp_dir: str = "", totalPages: int = 0, 
             lambda response: api_url_pattern in response.url and response.status == 200,
             timeout=0
         ) as response_info:
+            # .click()은 여러 '검색' 버튼 중 보이는 버튼을 알아서 클릭해 줌
             await search_button_locator.click()
         
         response = await response_info.value
@@ -133,15 +139,21 @@ async def get_item_detail_xml(params):
     try:
         await _navigate_to_results_page(page, **params)
         
-        search_button_locator = page.get_by_role("button", name="검색", exact=True)
-        await search_button_locator.wait_for(state='visible')
-
+        # ▼▼▼▼▼ 최종 수정 코드 ▼▼▼▼▼
+        # 가장 간단하고 확실한 선택자로 변경
+        search_button_locator = page.get_by_role('button', name='검색', exact=True)
+        
+        # 불필요한 wait_for 라인 삭제. .click()이 알아서 보이는 버튼을 기다려 클릭함.
+        # await search_button_locator.wait_for(state='visible')
+        # ▲▲▲▲▲ 최종 수정 코드 ▲▲▲▲▲
+        
         api_url_pattern = "/KorService2/locationBasedList2" if params.get("search_type") == "location" else "/KorService2/areaBasedList2"
 
         async with page.expect_response(
             lambda response: api_url_pattern in response.url and response.status == 200,
             timeout=0
         ) as response_info:
+            # .click()은 여러 '검색' 버튼 중 보이는 버튼을 알아서 클릭해 줌
             await search_button_locator.click()
 
         response = await response_info.value
@@ -165,4 +177,3 @@ async def get_item_detail_xml(params):
         raise e
     finally:
         await close_page_context(p, browser)
-
