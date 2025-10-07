@@ -20,7 +20,7 @@ async def get_page_context():
     p = await async_playwright().start()
     browser = await p.chromium.launch(headless=True)
     page = await browser.new_page()
-    page.set_default_timeout(60000)
+    page.set_default_timeout(300000)
     return p, browser, page
 
 async def close_page_context(p, browser):
@@ -33,13 +33,11 @@ async def go_to_page(page: Page, target_page: int, total_pages: int = 0):
     target_page = int(target_page)
     if target_page <= 1:
         try:
-            await page.wait_for_function("() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>1</pageNo>')", timeout=15000)
+            await page.wait_for_function("() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>1</pageNo>')", timeout=0)
         except Exception:
-            # Initial search might not be page 1 if there are no results, so don't fail here.
             pass
         return
 
-    # Determine initial direction
     go_backwards = total_pages > 0 and target_page > total_pages / 2
 
     if go_backwards:
@@ -49,16 +47,15 @@ async def go_to_page(page: Page, target_page: int, total_pages: int = 0):
             last_button = page.locator('div.paging button[name="last"]')
             if await last_button.is_visible():
                 await last_button.click()
-                await page.wait_for_function("(oldXml) => document.querySelector('textarea#ResponseXML').value !== oldXml", arg=old_xml, timeout=15000)
+                await page.wait_for_function("(oldXml) => document.querySelector('textarea#ResponseXML').value !== oldXml", arg=old_xml, timeout=0)
 
-    # Main navigation loop
-    for _ in range(3000): # Greatly increased loop limit
+    for _ in range(5000):
         current_page_loc = page.locator("div.paging button.on")
         current_page = int(await current_page_loc.get_attribute('value'))
 
         if current_page == target_page:
-            await page.wait_for_function(f"() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>{current_page}</pageNo>')", timeout=15000)
-            return # Success
+            await page.wait_for_function(f"() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>{current_page}</pageNo>')", timeout=0)
+            return
 
         visible_buttons = await page.locator("div.paging button[value]").all()
         visible_pages = [int(await b.get_attribute('value')) for b in visible_buttons if (await b.get_attribute('value')).isdigit()]
@@ -88,16 +85,16 @@ async def go_to_page(page: Page, target_page: int, total_pages: int = 0):
             await page.wait_for_function(
                 "(oldXml) => document.querySelector('textarea#ResponseXML').value !== oldXml",
                 arg=old_xml,
-                timeout=15000
+                timeout=0
             )
         except Exception as e:
             raise Exception(f"A pagination click failed to update content. Target: {target_page}, Current: {current_page}") from e
 
-    raise Exception(f"Failed to navigate to page {target_page} after 3000 attempts.")
+    raise Exception(f"Failed to navigate to page {target_page} after 5000 attempts.")
 
 async def scrape_item_detail_xml(page: Page, params):
     try:
-        await page.wait_for_function("document.querySelector('textarea#ResponseXML').value.length > 10", timeout=15000)
+        await page.wait_for_function("document.querySelector('textarea#ResponseXML').value.length > 10", timeout=0)
         xml_content = await page.locator("textarea#ResponseXML").input_value()
         root = ET.fromstring(xml_content)
         items = root.findall('.//body/items/item')
@@ -116,7 +113,7 @@ async def scrape_item_detail_xml(page: Page, params):
         api_url_pattern = "/KorService2/detailCommon2"
         async with page.expect_response(
             lambda response: api_url_pattern in response.url and response.status == 200,
-            timeout=30000
+            timeout=0
         ) as response_info:
             await item_locator.click()
         
@@ -141,7 +138,7 @@ async def scrape_item_detail_xml(page: Page, params):
 
         try:
             js_function = "(initialXml) => document.querySelector('textarea#ResponseXML').value !== initialXml"
-            await page.wait_for_function(js_function, arg=initial_xml, timeout=10000)
+            await page.wait_for_function(js_function, arg=initial_xml, timeout=0)
             new_xml = await xml_textarea_locator.input_value()
             if not new_xml.strip():
                  raise Exception("XML is empty, proceeding to HTML scrape.")
@@ -149,7 +146,7 @@ async def scrape_item_detail_xml(page: Page, params):
         except Exception:
             try:
                 tab_name = params.get("tab_name")
-                await page.locator('div.tab-content.on h4').wait_for(state='attached', timeout=10000)
+                await page.locator('div.tab-content.on h4').wait_for(state='attached', timeout=0)
                 tab_content_locator = page.locator("div.tab-content.on")
 
                 if (tab_name == "소개정보" or tab_name == "반복정보") and await tab_content_locator.locator("table").is_visible():
@@ -171,7 +168,7 @@ async def scrape_item_detail_xml(page: Page, params):
                 elif tab_name == "추가이미지":
                     try:
                         first_image_locator = tab_content_locator.locator("img").first
-                        await expect(first_image_locator).to_have_attribute("src", re.compile(r"^http"), timeout=15000)
+                        await expect(first_image_locator).to_have_attribute("src", re.compile(r"^http"), timeout=0)
                         
                         image_urls = []
                         images = await tab_content_locator.locator("img").all()

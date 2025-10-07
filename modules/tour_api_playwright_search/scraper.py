@@ -25,7 +25,7 @@ async def _navigate_to_results_page(page: Page, **kwargs):
     """Navigates to the base URL, sets language, and selects all dropdown options before search."""
     search_type = kwargs.get("search_type", "area")
     target_url = LOCATION_BASE_URL if search_type == "location" else BASE_URL
-    await page.goto(target_url, timeout=90000)
+    await page.goto(target_url, timeout=0)
     await page.wait_for_load_state('networkidle')
 
     # Language
@@ -95,7 +95,7 @@ async def get_search_results(pageNo=1, temp_dir: str = "", totalPages: int = 0, 
 
         async with page.expect_response(
             lambda response: api_url_pattern in response.url and response.status == 200,
-            timeout=30000
+            timeout=0
         ) as response_info:
             await search_button_locator.click()
         
@@ -140,7 +140,7 @@ async def get_item_detail_xml(params):
 
         async with page.expect_response(
             lambda response: api_url_pattern in response.url and response.status == 200,
-            timeout=30000
+            timeout=0
         ) as response_info:
             await search_button_locator.click()
 

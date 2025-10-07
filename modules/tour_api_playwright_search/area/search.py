@@ -10,9 +10,9 @@ async def get_sigungu_options(province):
     if not province or province == "전국": return []
     p, browser, page = await get_page_context()
     try:
-        await page.goto(BASE_URL, timeout=90000)
+        await page.goto(BASE_URL, timeout=0)
         await page.locator('button:has-text("지역 선택")').click()
-        await page.wait_for_selector('div.modal.region-modal.on', timeout=5000)
+        await page.wait_for_selector('div.modal.region-modal.on', timeout=0)
         await page.locator(f'div.modal.region-modal.on a[name="areaCd"]:has-text("{province}")').click()
         await page.wait_for_timeout(1000) # crucial wait
         sigungu_names = await page.locator('div.modal.region-modal.on a[name="signguCd"]').all_text_contents()
@@ -24,7 +24,7 @@ async def get_large_category_options(tourism_type):
     if not tourism_type or tourism_type == "선택 안함": return []
     p, browser, page = await get_page_context()
     try:
-        await page.goto(BASE_URL, timeout=90000)
+        await page.goto(BASE_URL, timeout=0)
         await page.locator('button:has-text("관광타입 선택")').click()
         await page.locator(f'div.modal#popup4.on a:has-text("{tourism_type}")').click()
         await page.locator('div.modal#popup4.on a:has-text("확인")').click()
@@ -41,7 +41,7 @@ async def get_medium_category_options(tourism_type, large_category):
         return []
     p, browser, page = await get_page_context()
     try:
-        await page.goto(BASE_URL, timeout=90000)
+        await page.goto(BASE_URL, timeout=0)
         
         if tourism_type and tourism_type != "선택 안함":
             await page.locator('button:has-text("관광타입 선택")').click()
@@ -63,7 +63,7 @@ async def get_small_category_options(tourism_type, large_category, medium_catego
         return []
     p, browser, page = await get_page_context()
     try:
-        await page.goto(BASE_URL, timeout=90000)
+        await page.goto(BASE_URL, timeout=0)
 
         if tourism_type and tourism_type != "선택 안함":
             await page.locator('button:has-text("관광타입 선택")').click()
