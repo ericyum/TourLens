@@ -10,16 +10,19 @@ from .common import (
 )
 # Dropdown functions are now self-contained in area.search
 from .area.search import (
-    get_sigungu_options, get_large_category_options, 
+    get_sigungu_options, get_large_category_options,
     get_medium_category_options, get_small_category_options
 )
 
 # --- Re-export dropdown functions for app.py to use ---
+# [수정] 외부에서 사용할 수 있도록 get_page_context와 close_page_context 추가
 __all__ = [
     'get_search_results', 'get_item_detail_xml', 'LANGUAGE_MAP',
-    'get_sigungu_options', 'get_large_category_options', 
-    'get_medium_category_options', 'get_small_category_options'
+    'get_sigungu_options', 'get_large_category_options',
+    'get_medium_category_options', 'get_small_category_options',
+    'get_page_context', 'close_page_context', 'perform_initial_search_for_export', 'get_items_from_page'
 ]
+
 
 async def _navigate_to_results_page(page: Page, **kwargs):
     """Navigates to the base URL, sets language, and selects all dropdown options before search."""
@@ -50,7 +53,7 @@ async def _navigate_to_results_page(page: Page, **kwargs):
                 await page.locator(f'div.modal.region-modal.on a[name="signguCd"]:has-text("{sigungu}")').click()
             await page.locator('div.modal.region-modal.on a:has-text("확인")').click()
             await page.locator('div.overlay.on').wait_for(state='hidden')
-        
+
         if tourism_type and tourism_type != "선택 안함":
             await page.locator('button:has-text("관광타입 선택")').click()
             await page.locator(f'div.modal#popup4.on a:has-text("{tourism_type}")').click()
@@ -82,19 +85,14 @@ async def _navigate_to_results_page(page: Page, **kwargs):
             await page.locator('div.modal#popup4.on a:has-text("확인")').click()
             await page.locator('div.overlay.on').wait_for(state='hidden')
 
+# [기존] get_search_results (단일 페이지 검색용)
 async def get_search_results(pageNo=1, temp_dir: str = "", totalPages: int = 0, **kwargs):
-    """The main function to get search results. It orchestrates the process."""
+    """The main function to get search results for a single page."""
     p, browser, page = await get_page_context()
     try:
         await _navigate_to_results_page(page, **kwargs)
-        
-        # ▼▼▼▼▼ 최종 수정 코드 ▼▼▼▼▼
-        # 가장 간단하고 확실한 선택자로 변경
+
         search_button_locator = page.get_by_role('button', name='검색', exact=True)
-        
-        # 불필요한 wait_for 라인 삭제. .click()이 알아서 보이는 버튼을 기다려 클릭함.
-        # await search_button_locator.wait_for(state='visible')
-        # ▲▲▲▲▲ 최종 수정 코드 ▲▲▲▲▲
 
         api_url_pattern = "/KorService2/locationBasedList2" if kwargs.get("search_type") == "location" else "/KorService2/areaBasedList2"
 
@@ -102,13 +100,12 @@ async def get_search_results(pageNo=1, temp_dir: str = "", totalPages: int = 0, 
             lambda response: api_url_pattern in response.url and response.status == 200,
             timeout=0
         ) as response_info:
-            # .click()은 여러 '검색' 버튼 중 보이는 버튼을 알아서 클릭해 줌
             await search_button_locator.click()
-        
+
         response = await response_info.value
         xml_content = await response.text()
 
-        if pageNo > 1: 
+        if pageNo > 1:
             await go_to_page(page, pageNo, totalPages)
             xml_content = await page.locator("textarea#ResponseXML").input_value()
 
@@ -117,7 +114,7 @@ async def get_search_results(pageNo=1, temp_dir: str = "", totalPages: int = 0, 
 
         total_count_element = root.find('.//body/totalCount')
         total_count = int(total_count_element.text) if total_count_element is not None and total_count_element.text else len(items)
-        
+
         results = []
         for item in items:
             item_xml_string = ET.tostring(item, encoding='unicode')
@@ -127,33 +124,64 @@ async def get_search_results(pageNo=1, temp_dir: str = "", totalPages: int = 0, 
                 "contentid": item.findtext('contentid'), "contenttypeid": item.findtext('contenttypeid'),
                 "initial_item_xml": item_xml_string
             })
-            
+
         req_url = await page.locator("p#RequestURL").text_content()
         return results, req_url, xml_content, total_count
     finally:
         await close_page_context(p, browser)
 
+# [신규] CSV 내보내기 전용: 초기 검색 수행 및 total_count 반환
+async def perform_initial_search_for_export(page: Page, **kwargs):
+    """Navigates, performs the first search, and returns the total item count."""
+    await _navigate_to_results_page(page, **kwargs)
+    search_button_locator = page.get_by_role('button', name='검색', exact=True)
+    api_url_pattern = "/KorService2/locationBasedList2" if kwargs.get("search_type") == "location" else "/KorService2/areaBasedList2"
+
+    async with page.expect_response(
+        lambda response: api_url_pattern in response.url and response.status == 200,
+        timeout=0
+    ) as response_info:
+        await search_button_locator.click()
+
+    response = await response_info.value
+    xml_content = await response.text()
+    root = ET.fromstring(xml_content)
+    total_count_element = root.find('.//body/totalCount')
+    return int(total_count_element.text) if total_count_element is not None and total_count_element.text else 0
+
+# [신규] CSV 내보내기 전용: 특정 페이지로 이동하여 아이템 목록 파싱
+async def get_items_from_page(page: Page, pageNo: int, totalPages: int):
+    """In an existing browser session, navigates to a page and scrapes the items."""
+    await go_to_page(page, pageNo, totalPages)
+    xml_content = await page.locator("textarea#ResponseXML").input_value()
+
+    root = ET.fromstring(xml_content)
+    items = root.findall('.//body/items/item')
+    results = []
+    for item in items:
+        item_xml_string = ET.tostring(item, encoding='unicode')
+        results.append({
+            "title": item.findtext('title'), "image": item.findtext('firstimage'),
+            "mapx": item.findtext('mapx'), "mapy": item.findtext('mapy'),
+            "contentid": item.findtext('contentid'), "contenttypeid": item.findtext('contenttypeid'),
+            "initial_item_xml": item_xml_string
+        })
+    return results
+
 async def get_item_detail_xml(params):
-    """The main function to get detail XML. It orchestrates the process."""
+    """The main function to get detail XML for a single item."""
     p, browser, page = await get_page_context()
     try:
         await _navigate_to_results_page(page, **params)
-        
-        # ▼▼▼▼▼ 최종 수정 코드 ▼▼▼▼▼
-        # 가장 간단하고 확실한 선택자로 변경
+
         search_button_locator = page.get_by_role('button', name='검색', exact=True)
-        
-        # 불필요한 wait_for 라인 삭제. .click()이 알아서 보이는 버튼을 기다려 클릭함.
-        # await search_button_locator.wait_for(state='visible')
-        # ▲▲▲▲▲ 최종 수정 코드 ▲▲▲▲▲
-        
+
         api_url_pattern = "/KorService2/locationBasedList2" if params.get("search_type") == "location" else "/KorService2/areaBasedList2"
 
         async with page.expect_response(
             lambda response: api_url_pattern in response.url and response.status == 200,
             timeout=0
         ) as response_info:
-            # .click()은 여러 '검색' 버튼 중 보이는 버튼을 알아서 클릭해 줌
             await search_button_locator.click()
 
         response = await response_info.value
@@ -164,8 +192,8 @@ async def get_item_detail_xml(params):
         total_count = 0
         if total_count_element is not None and total_count_element.text:
             total_count = int(total_count_element.text)
-        
-        ITEMS_PER_PAGE = 12 
+
+        ITEMS_PER_PAGE = 12
         total_pages = math.ceil(total_count / ITEMS_PER_PAGE) if total_count > 0 else 1
 
         page_no = params.get("pageNo", 1)
