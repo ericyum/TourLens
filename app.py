@@ -550,14 +550,31 @@ def create_tour_api_playwright_tab():
 
         with gr.Row():
             with gr.Column(scale=1):
-                language_dropdown = gr.Dropdown(label="언어", choices=list(scraper.LANGUAGE_MAP.keys()), value="한국어", interactive=True)
-                province_dropdown = gr.Dropdown(label="광역시/도", choices=["전국", "서울", "인천", "대전", "대구", "광주", "부산", "울산", "세종특별자치시", "경기도", "강원특별자치도", "충청북도", "충청남도", "경상북도", "경상남도", "전북특별자치도", "전라남도", "제주특별자치도"], value="전국", interactive=True)
-                sigungu_dropdown = gr.Dropdown(label="시/군/구", choices=[], interactive=True)
-                tourism_type_dropdown = gr.Dropdown(label="관광타입", choices=["선택 안함", "관광지", "문화시설", "축제공연행사", "여행코스", "레포츠", "숙박", "쇼핑", "음식점"], value="선택 안함", interactive=True)
-                large_category_dropdown = gr.Dropdown(label="서비스 분류 (대분류)", choices=DEFAULT_LARGE_CATEGORIES, value="선택 안함", interactive=True)
-                medium_category_dropdown = gr.Dropdown(label="서비스 분류 (중분류)", choices=[], interactive=True)
-                small_category_dropdown = gr.Dropdown(label="서비스 분류 (소분류)", choices=[], interactive=True)
-                search_button = gr.Button("검색", variant="primary")
+                with gr.Tabs():
+                    with gr.TabItem("지역별 관광정보"):
+                        language_dropdown = gr.Dropdown(label="언어", choices=list(scraper.LANGUAGE_MAP.keys()), value="한국어", interactive=True)
+                        province_dropdown = gr.Dropdown(label="광역시/도", choices=["전국", "서울", "인천", "대전", "대구", "광주", "부산", "울산", "세종특별자치시", "경기도", "강원특별자치도", "충청북도", "충청남도", "경상북도", "경상남도", "전북특별자치도", "전라남도", "제주특별자치도"], value="전국", interactive=True)
+                        sigungu_dropdown = gr.Dropdown(label="시/군/구", choices=[], interactive=True)
+                        tourism_type_dropdown = gr.Dropdown(label="관광타입", choices=["선택 안함", "관광지", "문화시설", "축제공연행사", "여행코스", "레포츠", "숙박", "쇼핑", "음식점"], value="선택 안함", interactive=True)
+                        large_category_dropdown = gr.Dropdown(label="서비스 분류 (대분류)", choices=DEFAULT_LARGE_CATEGORIES, value="선택 안함", interactive=True)
+                        medium_category_dropdown = gr.Dropdown(label="서비스 분류 (중분류)", choices=[], interactive=True)
+                        small_category_dropdown = gr.Dropdown(label="서비스 분류 (소분류)", choices=[], interactive=True)
+                        search_button = gr.Button("검색", variant="primary")
+
+                    with gr.TabItem("내주변 관광정보") as location_tab:
+                        loc_language_dropdown = gr.Dropdown(label="언어", choices=list(scraper.LANGUAGE_MAP.keys()), value="한국어", interactive=True)
+                        loc_tourism_type_dropdown = gr.Dropdown(label="관광타입", choices=["선택 안함", "관광지", "문화시설", "축제공연행사", "여행코스", "레포츠", "숙박", "쇼핑", "음식점"], value="선택 안함", interactive=True)
+                        with gr.Row():
+                            map_y_input = gr.Textbox(label="mapY (위도)", value="")
+                            map_x_input = gr.Textbox(label="mapX (경도)", value="")
+                        with gr.Row():
+                            radius_input = gr.Textbox(label="거리 (m)", value="2000")
+                            loc_show_map_button = gr.Button("지도보기")
+                        loc_search_button = gr.Button("검색", variant="primary")
+                        with gr.Group(visible=False) as loc_map_group:
+                            loc_map_html = gr.HTML(label="지도")
+                            loc_close_map_button = gr.Button("지도 닫기")
+
                 export_csv_button = gr.Button("결과 전체 CSV 저장")
             
             with gr.Column(scale=3):
@@ -625,7 +642,6 @@ def create_tour_api_playwright_tab():
         async def process_search(params, page_num, total_pages=0):
             page_num = int(page_num)
             
-            # Yield a full list of 13 values to match the `search_outputs` length
             yield [
                 f"{page_num} 페이지를 검색합니다...", # status_output
                 [], # results_output
@@ -663,7 +679,6 @@ def create_tour_api_playwright_tab():
                 if not results: 
                     status_message = "검색 결과가 없습니다."
 
-                # Yield a full list of 13 values
                 yield [
                     status_message, # status_output
                     gallery_data, # results_output
@@ -680,7 +695,6 @@ def create_tour_api_playwright_tab():
                     None # csv_output_file
                 ]
             except Exception as e:
-                # Yield a full list of 13 values on error
                 yield [
                     f"검색 중 오류 발생: {e}", # status_output
                     [], # results_output
@@ -698,7 +712,11 @@ def create_tour_api_playwright_tab():
                 ]
 
         async def initial_search(lang, prov, sig, tour, c1, c2, c3):
-            params = {"language": lang, "province": prov, "sigungu": sig, "tourism_type": tour, "cat1": c1, "cat2": c2, "cat3": c3}
+            params = {"search_type": "area", "language": lang, "province": prov, "sigungu": sig, "tourism_type": tour, "cat1": c1, "cat2": c2, "cat3": c3}
+            async for update in process_search(params, 1, 0): yield update
+            
+        async def initial_loc_search(lang, tour, map_x, map_y, radius):
+            params = {"search_type": "location", "language": lang, "tourism_type": tour, "map_x": map_x, "map_y": map_y, "radius": radius}
             async for update in process_search(params, 1, 0): yield update
 
         async def change_page(page_num, stored_params):
@@ -832,12 +850,19 @@ def create_tour_api_playwright_tab():
             map_url = f"https://maps.google.com/maps?q={mapy},{mapx}&hl=ko&z=15&output=embed"
             return gr.update(value=f'<iframe src="{map_url}" style="width: 100%; height: 400px; border: none;"></iframe>')
 
+        def show_loc_map(mapx, mapy):
+            if not mapx or not mapy: return gr.update(value="<p>좌표 정보가 없어 지도를 표시할 수 없습니다.</p>")
+            map_url = f"https://maps.google.com/maps?q={mapy},{mapx}&hl=ko&z=15&output=embed"
+            return gr.update(value=f'<iframe src="{map_url}" style="width: 100%; height: 400px; border: none;"></iframe>')
+
         # --- Attach Event Handlers ---
         search_inputs = [language_dropdown, province_dropdown, sigungu_dropdown, tourism_type_dropdown, 
                          large_category_dropdown, medium_category_dropdown, small_category_dropdown]
         search_outputs = [status_output, results_output, api_accordion, request_url_output, response_xml_output, 
                           search_params, current_page, total_pages, page_number_input, total_pages_output, current_gallery_data, detail_view_column, csv_output_file]
         
+        loc_search_inputs = [loc_language_dropdown, loc_tourism_type_dropdown, map_x_input, map_y_input, radius_input]
+
         detail_outputs = [status_output, detail_view_column, detail_title, detail_image, detail_overview, 
                           detail_info_table, selected_item_info, map_group, 
                           intro_info_markdown, repeat_info_markdown, additional_images_gallery]
@@ -848,7 +873,13 @@ def create_tour_api_playwright_tab():
         medium_category_dropdown.change(update_small_category_dropdown, inputs=[tourism_type_dropdown, large_category_dropdown, medium_category_dropdown], outputs=small_category_dropdown)
 
         search_button.click(fn=initial_search, inputs=search_inputs, outputs=search_outputs, queue=True)
+        loc_search_button.click(fn=initial_loc_search, inputs=loc_search_inputs, outputs=search_outputs, queue=True)
         export_csv_button.click(fn=export_details_to_csv, inputs=[search_params], outputs=[csv_output_file], queue=True)
+
+        location_tab.select(fn=None, js=get_location_js, outputs=[map_y_input, map_x_input])
+
+        loc_show_map_button.click(fn=show_loc_map, inputs=[map_x_input, map_y_input], outputs=[loc_map_html]).then(lambda: gr.update(visible=True), outputs=[loc_map_group])
+        loc_close_map_button.click(lambda: gr.update(visible=False), outputs=[loc_map_group])
 
         async def change_page(page_num, stored_params, total_pages=0):
             async for update in process_search(stored_params, int(page_num), total_pages): yield update
@@ -951,9 +982,9 @@ demo = gr.TabbedInterface(
 # --- 애플리케이션 실행 ---
 if __name__ == "__main__":
     # .env 파일 및 필수 키 확인 (기존 TourAPI 키 확인 부분은 주석 처리하거나 삭제 가능)
-    # if not os.getenv("TOUR_API_KTY"):
-    #     print("TourAPI 키가 설정되지 않았습니다. .env 파일에 TOUR_API_KTY를 추가해주세요.")
-    #     exit()
+    if not os.getenv("TOUR_API_KEY"):
+        print("TourAPI 키가 설정되지 않았습니다. .env 파일에 TOUR_API_KEY를 추가해주세요.")
+        exit()
     if not os.getenv("NAVER_CLIENT_ID") or not os.getenv("NAVER_CLIENT_SECRET"):
         print("네이버 블로그 API 인증 정보가 .env 파일에 설정되지 않았습니다.")
         exit()

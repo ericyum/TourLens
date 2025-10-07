@@ -1,129 +1,117 @@
 import asyncio
-import xml.dom.minidom
-import re
-import os
-import requests
-import html
-from playwright.async_api import async_playwright, Page, expect
 import xml.etree.ElementTree as ET
+import math
+from playwright.async_api import Page
 
-# --- Constants ---
-BASE_URL = "https://api.visitkorea.or.kr/#/useInforArea"
-LANGUAGE_MAP = {
-    "한국어": "Kor", "영어": "Eng", "일어": "Jpn", "중국어(간체)": "Chs",
-    "중국어(번체)": "Cht", "독일어": "Ger", "프랑스어": "Fre", "스페인어": "Spa", "러시아어": "Rus",
-}
+# --- Import modules for each search type and common utilities ---
+from .common import (
+    get_page_context, close_page_context, go_to_page, scrape_item_detail_xml,
+    BASE_URL, LOCATION_BASE_URL, LANGUAGE_MAP
+)
+# Dropdown functions are now self-contained in area.search
+from .area.search import (
+    get_sigungu_options, get_large_category_options, 
+    get_medium_category_options, get_small_category_options
+)
 
-# --- Playwright Context Management ---
-async def _get_page_context():
-    p = await async_playwright().start()
-    browser = await p.chromium.launch(headless=True)
-    page = await browser.new_page()
-    page.set_default_timeout(60000)
-    return p, browser, page
+# --- Re-export dropdown functions for app.py to use ---
+__all__ = [
+    'get_search_results', 'get_item_detail_xml', 'LANGUAGE_MAP',
+    'get_sigungu_options', 'get_large_category_options', 
+    'get_medium_category_options', 'get_small_category_options'
+]
 
-async def _close_page_context(p, browser):
-    if browser and browser.is_connected():
-        await browser.close()
+async def _navigate_to_results_page(page: Page, **kwargs):
+    """Navigates to the base URL, sets language, and selects all dropdown options before search."""
+    search_type = kwargs.get("search_type", "area")
+    target_url = LOCATION_BASE_URL if search_type == "location" else BASE_URL
+    await page.goto(target_url, timeout=90000)
+    await page.wait_for_load_state('networkidle')
 
-# --- Scraper Core Logic ---
-
-async def _navigate_to_results_page(page: Page, language, province, sigungu, tourism_type, cat1, cat2, cat3):
-    await page.goto(BASE_URL, timeout=90000)
-    await page.wait_for_timeout(2000)
+    # Language
+    language = kwargs.get("language")
     if language and language != "한국어":
         await page.locator('button.btn-lang').click()
         await page.locator(f'ul.lang-list a[data-lang="{LANGUAGE_MAP[language]}"]').click()
         await page.wait_for_load_state('networkidle')
-    if province and province != "전국":
-        await page.locator('button:has-text("지역 선택")').click()
-        await page.locator(f'div.modal.region-modal.on a[name="areaCd"]:has-text("{province}")').click()
-        await page.wait_for_timeout(500)
-        if sigungu and sigungu != "전체":
-            await page.locator(f'div.modal.region-modal.on a[name="signguCd"]:has-text("{sigungu}")').click()
-        await page.locator('div.modal.region-modal.on a:has-text("확인")').click()
-        await page.locator('div.overlay.on').wait_for(state='hidden')
-    if tourism_type:
-        await page.locator('button:has-text("관광타입 선택")').click()
-        await page.locator(f'div.modal#popup4.on a:has-text("{tourism_type}")').click()
-        await page.locator('div.modal#popup4.on a:has-text("확인")').click()
-        await page.locator('div.overlay.on').wait_for(state='hidden')
-    if cat1 or cat2 or cat3:
-        await page.locator('button:has-text("서비스 분류 선택")').click()
-        await page.wait_for_selector('div.modal#popup1.on')
-        if cat1: await page.locator(f'div.modal#popup1.on a[name="cat1"]:has-text("{cat1}")').click(); await page.wait_for_timeout(500)
-        if cat2: await page.locator(f'div.modal#popup1.on a[name="cat2"]:has-text("{cat2}")').click(); await page.wait_for_timeout(500)
-        if cat3: await page.locator(f'div.modal#popup1.on a[name="cat3"]:has-text("{cat3}")').click()
-        await page.locator('div.modal#popup1.on a:has-text("확인")').click()
-        await page.locator('div.overlay.on').wait_for(state='hidden')
-    await page.locator('div.search-filter button:has-text("검색")').click()
-    await page.wait_for_selector('textarea#ResponseXML', timeout=30000)
 
-async def _go_to_page(page: Page, target_page: int, total_pages: int = 0):
-    target_page = int(target_page)
-    if target_page <= 1:
-        return
+    # Area-based search dropdowns
+    if search_type == "area":
+        province = kwargs.get("province")
+        sigungu = kwargs.get("sigungu")
+        tourism_type = kwargs.get("tourism_type")
+        cat1, cat2, cat3 = kwargs.get("cat1"), kwargs.get("cat2"), kwargs.get("cat3")
 
-    # Loop to navigate to the target page
-    for _ in range(2000): # Generous attempt limit as requested by user
-        try:
-            current_page_loc = page.locator("div.paging button.on")
-            current_page = int(await current_page_loc.get_attribute('value'))
-
-            if current_page == target_page:
-                # Before returning, do a final check to ensure XML data is for the current page
-                await page.wait_for_function(f"() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>{current_page}</pageNo>')", timeout=5000)
-                return  # Success!
-        except Exception as e:
-            await page.screenshot(path="debug_nav_get_current_page_failed.png")
-            raise Exception(f"Could not determine current page or XML was stale. Error: {e}")
-
-        old_xml = await page.locator("textarea#ResponseXML").input_value()
+        if province and province != "전국":
+            await page.locator('button:has-text("지역 선택")').click()
+            await page.locator(f'div.modal.region-modal.on a[name="areaCd"]:has-text("{province}")').click()
+            await page.wait_for_timeout(500)
+            if sigungu and sigungu != "전체":
+                await page.locator(f'div.modal.region-modal.on a[name="signguCd"]:has-text("{sigungu}")').click()
+            await page.locator('div.modal.region-modal.on a:has-text("확인")').click()
+            await page.locator('div.overlay.on').wait_for(state='hidden')
         
-        button_to_click = None
-        target_button = page.locator(f"div.paging button[value='{target_page}']")
+        if tourism_type and tourism_type != "선택 안함":
+            await page.locator('button:has-text("관광타입 선택")').click()
+            await page.locator(f'div.modal#popup4.on a:has-text("{tourism_type}")').click()
+            await page.locator('div.modal#popup4.on a:has-text("확인")').click()
+            await page.locator('div.overlay.on').wait_for(state='hidden')
 
-        if await target_button.is_visible():
-            # Priority 1: Target page number is visible. Click it directly.
-            button_to_click = target_button
-        elif total_pages > 0 and target_page == total_pages:
-            # Priority 2: We need to go to the very last page. Use the 'last' button.
-            button_to_click = page.locator('div.paging button[name="last"]')
-        elif current_page < target_page:
-            # Priority 3: Target is ahead. Click 'next' to show the next block of pages.
-            button_to_click = page.locator('div.paging button[name="next"]')
-        else: # current_page > target_page
-            # Priority 4: Target is behind. Click 'prev' to show the previous block.
-            button_to_click = page.locator('div.paging button[name="prev"]')
+        if cat1 and cat1 != "선택 안함":
+            await page.locator('button:has-text("서비스 분류 선택")').click()
+            await page.wait_for_selector('div.modal#popup1.on')
+            await page.locator(f'div.modal#popup1.on a[name="cat1"]:has-text("{cat1}")').click()
+            await page.wait_for_timeout(500)
+            if cat2 and cat2 != "선택 안함":
+                await page.locator(f'div.modal#popup1.on a[name="cat2"]:has-text("{cat2}")').click()
+                await page.wait_for_timeout(500)
+            if cat3 and cat3 != "선택 안함":
+                await page.locator(f'div.modal#popup1.on a[name="cat3"]:has-text("{cat3}")').click()
+            await page.locator('div.modal#popup1.on a:has-text("확인")').click()
+            await page.locator('div.overlay.on').wait_for(state='hidden')
 
-        if not button_to_click or not await button_to_click.is_visible():
-             await page.screenshot(path="debug_nav_no_button_found.png")
-             raise Exception(f"Pagination logic failed: could not find a button to click to reach page {target_page}.")
+    # Location-based search inputs
+    elif search_type == "location":
+        await page.locator('input#searchXCoord').fill(kwargs.get("map_x", ""))
+        await page.locator('input#searchYCoord').fill(kwargs.get("map_y", ""))
+        await page.locator('input#searchRadius').fill(kwargs.get("radius", "2000"))
+        tourism_type = kwargs.get("tourism_type")
+        if tourism_type and tourism_type != "선택 안함":
+            await page.locator('button:has-text("관광타입 선택")').click()
+            await page.locator(f'div.modal#popup4.on a:has-text("{tourism_type}")').click()
+            await page.locator('div.modal#popup4.on a:has-text("확인")').click()
+            await page.locator('div.overlay.on').wait_for(state='hidden')
 
-        # Perform the click and wait for the data to change. This is the crucial, unified wait.
-        try:
-            await button_to_click.click()
-            await page.wait_for_function(
-                "(oldXml) => document.querySelector('textarea#ResponseXML').value !== oldXml",
-                arg=old_xml,
-                timeout=15000
-            )
-        except Exception as e:
-            await page.screenshot(path="debug_final_nav_failed.png")
-            raise Exception(f"A pagination click failed to update content. Target: {target_page}, Current: {current_page}") from e
-
-    raise Exception(f"Failed to navigate to page {target_page} after 2000 attempts.")
-
-async def get_search_results(language, province, sigungu, tourism_type, cat1, cat2, cat3, pageNo=1, temp_dir: str = "", totalPages: int = 0):
-    p, browser, page = await _get_page_context()
+async def get_search_results(pageNo=1, temp_dir: str = "", totalPages: int = 0, **kwargs):
+    """The main function to get search results. It orchestrates the process."""
+    p, browser, page = await get_page_context()
     try:
-        await _navigate_to_results_page(page, language, province, sigungu, tourism_type, cat1, cat2, cat3)
-        if pageNo > 1: await _go_to_page(page, pageNo, totalPages)
-        await page.wait_for_function("document.querySelector('textarea#ResponseXML').value.length > 10", timeout=15000)
-        xml_content = await page.locator("textarea#ResponseXML").input_value()
+        await _navigate_to_results_page(page, **kwargs)
+        
+        search_button_locator = page.get_by_role("button", name="검색", exact=True)
+        await search_button_locator.wait_for(state='visible')
+
+        api_url_pattern = "/KorService2/locationBasedList2" if kwargs.get("search_type") == "location" else "/KorService2/areaBasedList2"
+
+        async with page.expect_response(
+            lambda response: api_url_pattern in response.url and response.status == 200,
+            timeout=30000
+        ) as response_info:
+            await search_button_locator.click()
+        
+        response = await response_info.value
+        xml_content = await response.text()
+
+        if pageNo > 1: 
+            await go_to_page(page, pageNo, totalPages)
+            xml_content = await page.locator("textarea#ResponseXML").input_value()
+
         root = ET.fromstring(xml_content)
-        total_count = int(root.find('.//body/totalCount').text)
         items = root.findall('.//body/items/item')
+
+        total_count_element = root.find('.//body/totalCount')
+        total_count = int(total_count_element.text) if total_count_element is not None and total_count_element.text else len(items)
+        
         results = []
         for item in items:
             item_xml_string = ET.tostring(item, encoding='unicode')
@@ -133,219 +121,48 @@ async def get_search_results(language, province, sigungu, tourism_type, cat1, ca
                 "contentid": item.findtext('contentid'), "contenttypeid": item.findtext('contenttypeid'),
                 "initial_item_xml": item_xml_string
             })
+            
         req_url = await page.locator("p#RequestURL").text_content()
         return results, req_url, xml_content, total_count
     finally:
-        await _close_page_context(p, browser)
+        await close_page_context(p, browser)
 
 async def get_item_detail_xml(params):
-    p, browser, page = await _get_page_context()
+    """The main function to get detail XML. It orchestrates the process."""
+    p, browser, page = await get_page_context()
     try:
-        await _navigate_to_results_page(page, **{k: v for k, v in params.items() if k in ['language', 'province', 'sigungu', 'tourism_type', 'cat1', 'cat2', 'cat3']})
+        await _navigate_to_results_page(page, **params)
         
+        search_button_locator = page.get_by_role("button", name="검색", exact=True)
+        await search_button_locator.wait_for(state='visible')
+
+        api_url_pattern = "/KorService2/locationBasedList2" if params.get("search_type") == "location" else "/KorService2/areaBasedList2"
+
+        async with page.expect_response(
+            lambda response: api_url_pattern in response.url and response.status == 200,
+            timeout=30000
+        ) as response_info:
+            await search_button_locator.click()
+
+        response = await response_info.value
+        xml_content = await response.text()
+
+        root = ET.fromstring(xml_content)
+        total_count_element = root.find('.//body/totalCount')
+        total_count = 0
+        if total_count_element is not None and total_count_element.text:
+            total_count = int(total_count_element.text)
+        
+        ITEMS_PER_PAGE = 12 
+        total_pages = math.ceil(total_count / ITEMS_PER_PAGE) if total_count > 0 else 1
+
         page_no = params.get("pageNo", 1)
         if page_no > 1:
-            # We don't know the total pages here, so we pass 0 and rely on the forward/backward logic.
-            await _go_to_page(page, page_no, 0)
+            await go_to_page(page, page_no, total_pages)
 
-        await page.wait_for_function("document.querySelector('textarea#ResponseXML').value.length > 10", timeout=15000)
-        xml_content = await page.locator("textarea#ResponseXML").input_value()
-        root = ET.fromstring(xml_content)
-        items = root.findall('.//body/items/item')
-
-        title_to_click = None
-        for item in items:
-            if item.findtext('contentid') == params.get('contentid'):
-                title_to_click = item.findtext('title')
-                break
-
-        if title_to_click is None: raise Exception(f"Could not find item with contentid '{params.get('contentid')}' on page {params.get('pageNo', 1)}.")
-
-        await page.locator(f'ul.gallery-list li:has-text("{title_to_click}")').click()
-        
-        await page.wait_for_function("document.querySelector('textarea#ResponseXML').value.includes('<overview>')", timeout=15000)
-
-        xml_textarea_locator = page.locator("textarea#ResponseXML")
-
-        if params.get("tab_name") == "공통정보":
-            return await xml_textarea_locator.input_value()
-
-        tab_button_locator = page.locator(f'button:has-text("{params.get("tab_name")}")')
-        
-        if not await tab_button_locator.is_visible():
-            return "<response><body><items></items></body></response>"
-
-        initial_xml = await xml_textarea_locator.input_value()
-        await tab_button_locator.click()
-
-        try:
-            js_function = "(initialXml) => document.querySelector('textarea#ResponseXML').value !== initialXml"
-            await page.wait_for_function(js_function, arg=initial_xml, timeout=10000)
-            new_xml = await xml_textarea_locator.input_value()
-            if not new_xml.strip():
-                 raise Exception("XML is empty, proceeding to HTML scrape.")
-            return new_xml
-        except Exception:
-            try:
-                tab_name = params.get("tab_name")
-                await page.locator('div.tab-content.on h4').wait_for(state='attached', timeout=10000)
-                tab_content_locator = page.locator("div.tab-content.on")
-
-                await page.screenshot(path=f"debug_{tab_name}_fallback_entry.png")
-
-                if (tab_name == "소개정보" or tab_name == "반복정보") and await tab_content_locator.locator("table").is_visible():
-                    xml_item_content = ""
-                    rows = await tab_content_locator.locator("tbody > tr").all()
-                    for row in rows:
-                        th_locator = row.locator("td.th")
-                        td_locator = row.locator("td:not(.th)")
-                        if await th_locator.count() > 0 and await td_locator.count() > 0:
-                            th_text = await th_locator.first.text_content()
-                            td_text = await td_locator.first.text_content()
-                            tag_name = re.sub(r'[^A-Za-z0-9_가-힣]', '', th_text.strip())
-                            if tag_name:
-                                escaped_td_text = html.escape(td_text.strip())
-                                xml_item_content += f"<{tag_name}>{escaped_td_text}</{tag_name}>"
-                    if xml_item_content:
-                        return f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><response><body><items><item>{xml_item_content}</item></items></body></response>'
-
-                elif tab_name == "추가이미지":
-                    try:
-                        first_image_locator = tab_content_locator.locator("img").first
-                        await expect(first_image_locator).to_have_attribute("src", re.compile(r"^http"), timeout=15000)
-                        
-                        image_urls = []
-                        images = await tab_content_locator.locator("img").all()
-                        for img in images:
-                            src = await img.get_attribute("src")
-                            if src and src.startswith('http'):
-                                image_urls.append(src)
-                        
-                        unique_urls = list(dict.fromkeys(image_urls))
-                        if unique_urls:
-                            xml_items = ""
-                            for url in unique_urls:
-                                xml_items += f"<item><originimgurl>{url}</originimgurl></item>"
-                            final_xml_string = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><response><body><items>{xml_items}</items></body></response>'
-                            print(f"DEBUG SCRAPER: Returning XML for 추가이미지: {final_xml_string}")
-                            return final_xml_string
-                    except Exception as e:
-                        print(f"DEBUG SCRAPER: Error while waiting for/scraping images: {e}")
-                        return "<response><body><items></items></body></response>"
-
-            except Exception:
-                return "<response><body><items></items></body></response>"
-            
-            return "<response><body><items></items></body></response>"
-
+        return await scrape_item_detail_xml(page, params)
     except Exception as e:
-        await page.screenshot(path=f"debug_xml_error.png")
         raise e
     finally:
-        await _close_page_context(p, browser)
+        await close_page_context(p, browser)
 
-async def get_available_tabs(params):
-    p, browser, page = await _get_page_context()
-    try:
-        await _navigate_to_results_page(page, **{k: v for k, v in params.items() if k in ['language', 'province', 'sigungu', 'tourism_type', 'cat1', 'cat2', 'cat3']})
-        if params.get("pageNo", 1) > 1:
-            await _go_to_page(page, params["pageNo"])
-
-        await page.wait_for_function("document.querySelector('textarea#ResponseXML').value.length > 10", timeout=15000)
-        
-        xml_content = await page.locator("textarea#ResponseXML").input_value()
-        root = ET.fromstring(xml_content)
-        items = root.findall('.//body/items/item')
-        item_to_click = next((item for item in items if item.findtext('contentid') == params.get('contentid')), None)
-
-        if item_to_click is None:
-            raise Exception(f"Could not find item with contentid '{params.get('contentid')}' on page {params.get('pageNo', 1)}.")
-
-        title_to_click = item_to_click.findtext('title')
-        
-        await page.locator(f'ul.gallery-list li:has-text("{title_to_click}")').click()
-        
-        await page.wait_for_selector('div.tab-box ul.tab-type2', timeout=10000)
-        tab_texts = await page.locator('div.tab-box ul.tab-type2 li button').all_text_contents()
-        
-        available_tabs = [tab.strip() for tab in tab_texts if tab.strip()]
-        
-        if not available_tabs:
-            return ["공통정보"]
-
-        return available_tabs
-    except Exception as e:
-        print(f"DEBUG: Error in get_available_tabs, returning default tabs. Error: {e}")
-        return ["공통정보", "소개정보", "반복정보", "추가이미지"]
-    finally:
-        await _close_page_context(p, browser)
-
-
-# Functions for dropdowns are self-contained and do not need changes
-async def get_sigungu_options(province):
-    if not province or province == "전국": return []
-    p, browser, page = await _get_page_context()
-    try:
-        await page.goto(BASE_URL, timeout=90000)
-        await page.locator('button:has-text("지역 선택")').click()
-        await page.wait_for_selector('div.modal.region-modal.on', timeout=5000)
-        await page.locator(f'div.modal.region-modal.on a[name="areaCd"]:has-text("{province}")').click()
-        await page.wait_for_timeout(1000)
-        sigungu_names = await page.locator('div.modal.region-modal.on a[name="signguCd"]').all_text_contents()
-        return [name.strip() for name in sigungu_names if name.strip()]
-    finally:
-        await _close_page_context(p, browser)
-
-async def get_large_category_options(tourism_type):
-    if not tourism_type: return []
-    p, browser, page = await _get_page_context()
-    try:
-        await page.goto(BASE_URL, timeout=90000)
-        await page.locator('button:has-text("관광타입 선택")').click()
-        await page.locator(f'div.modal#popup4.on a:has-text("{tourism_type}")').click()
-        await page.locator('div.modal#popup4.on a:has-text("확인")').click()
-        await page.locator('div.overlay.on').wait_for(state='hidden')
-        await page.locator('button:has-text("서비스 분류 선택")').click()
-        await page.wait_for_selector('div.modal#popup1.on')
-        category_names = await page.locator('div.modal#popup1.on a[name="cat1"]').all_text_contents()
-        return [name.strip() for name in category_names if name.strip()]
-    finally:
-        await _close_page_context(p, browser)
-
-async def get_medium_category_options(tourism_type, large_category):
-    if not tourism_type or not large_category: return []
-    p, browser, page = await _get_page_context()
-    try:
-        await page.goto(BASE_URL, timeout=90000)
-        await page.locator('button:has-text("관광타입 선택")').click()
-        await page.locator(f'div.modal#popup4.on a:has-text("{tourism_type}")').click()
-        await page.locator('div.modal#popup4.on a:has-text("확인")').click()
-        await page.locator('div.overlay.on').wait_for(state='hidden')
-        await page.locator('button:has-text("서비스 분류 선택")').click()
-        await page.wait_for_selector('div.modal#popup1.on')
-        await page.locator(f'div.modal#popup1.on a[name="cat1"]:has-text("{large_category}")').click()
-        await page.wait_for_timeout(500)
-        category_names = await page.locator('div.modal#popup1.on a[name="cat2"]').all_text_contents()
-        return [name.strip() for name in category_names if name.strip()]
-    finally:
-        await _close_page_context(p, browser)
-
-async def get_small_category_options(tourism_type, large_category, medium_category):
-    if not tourism_type or not large_category or not medium_category: return []
-    p, browser, page = await _get_page_context()
-    try:
-        await page.goto(BASE_URL, timeout=90000)
-        await page.locator('button:has-text("관광타입 선택")').click()
-        await page.locator(f'div.modal#popup4.on a:has-text("{tourism_type}")').click()
-        await page.locator('div.modal#popup4.on a:has-text("확인")').click()
-        await page.locator('div.overlay.on').wait_for(state='hidden')
-        await page.locator('button:has-text("서비스 분류 선택")').click()
-        await page.wait_for_selector('div.modal#popup1.on')
-        await page.locator(f'div.modal#popup1.on a[name="cat1"]:has-text("{large_category}")').click()
-        await page.wait_for_timeout(500)
-        await page.locator(f'div.modal#popup1.on a[name="cat2"]:has-text("{medium_category}")').click()
-        await page.wait_for_timeout(500)
-        category_names = await page.locator('div.modal#popup1.on a[name="cat3"]').all_text_contents()
-        return [name.strip() for name in category_names if name.strip()]
-    finally:
-        await _close_page_context(p, browser)
