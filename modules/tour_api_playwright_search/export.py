@@ -9,13 +9,13 @@ from playwright.async_api import expect
 
 # Relative imports from within the same module
 from . import scraper
-from .common import parse_xml_to_ordered_list
+from .common import parse_xml_to_ordered_list, BASE_URL
 
 
 async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=True)):
-    """[수정됨] 단일 브라우저 세션과 '뒤로 가기' 로직으로 모든 아이템의 상세 정보를 CSV로 저장합니다."""
+    """[수정됨] 가장 안정적인 방식으로, 모든 아이템을 개별적으로 처음부터 다시 검색하여 처리합니다."""
     ITEMS_PER_PAGE = 12
-    TEMP_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "Temp") # 경로 수정
+    TEMP_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "Temp")
     os.makedirs(TEMP_DIR, exist_ok=True)
 
     initial_params = search_params.copy()
@@ -25,38 +25,27 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
     if initial_params.get("cat3") == "선택 안함": initial_params["cat3"] = None
 
     p, browser, page = await scraper.get_page_context()
-    all_items_with_page = []
-    total_pages = 0
+    
+    # --- 1. 전체 아이템 목록을 한 번만 가져옵니다. ---
+    all_items_to_process = []
     try:
-        progress(0, desc="Getting total number of items...")
+        progress(0, desc="Fetching the complete list of items...")
         total_count = await scraper.perform_initial_search_for_export(page, **initial_params)
-
         if total_count == 0:
             gr.Info("No items to export.")
-            await scraper.close_page_context(p, browser)
             return None
+        
         total_pages = math.ceil(total_count / ITEMS_PER_PAGE)
-
-        # 모든 페이지를 돌며 아이템 목록과 페이지 번호 수집
-        for page_num in progress.tqdm(range(1, total_pages + 1), desc=f"Fetching item lists from {total_pages} pages"):
-            try:
-                results = await scraper.get_items_from_page(page, page_num, total_pages)
-                for item in results:
-                    all_items_with_page.append((item, page_num))
-            except Exception as e:
-                print(f"Warning: Failed to fetch page {page_num}. Error: {e}")
-                continue
-    
+        for page_num in range(1, total_pages + 1):
+            items_on_page = await scraper.get_items_from_page(page, page_num, total_pages)
+            for item in items_on_page:
+                all_items_to_process.append((item.get("contentid"), page_num, item.get("initial_item_xml")))
     except Exception as e:
-        gr.Error(f"Failed during page fetching. Error: {e}")
-        await scraper.close_page_context(p, browser)
-        return None
-    
-    if not all_items_with_page:
-        gr.Info("Could not fetch any item lists.")
+        gr.Error(f"Failed to create the initial item list. Error: {e}")
         await scraper.close_page_context(p, browser)
         return None
 
+    # --- 2. 각 아이템을 개별적으로, 처음부터 다시 검색하여 처리합니다. ---
     all_attraction_details = []
     simple_search_keys, common_info_keys, intro_info_keys, repeat_info_keys, image_keys = [], [], [], [], []
     seen_keys = set()
@@ -72,20 +61,19 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
         ("반복정보", repeat_info_keys),
         ("추가이미지", image_keys)
     ]
-    
-    current_page_in_browser = 1
+
     try:
-        for item, page_num in progress.tqdm(all_items_with_page, desc="Collecting details for each attraction"):
-            content_id = item.get("contentid")
-            if not content_id: continue
+        for content_id, page_num, initial_xml in progress.tqdm(all_items_to_process, desc="Collecting details for each item"):
+            if not content_id:
+                continue
 
             try:
-                if current_page_in_browser != page_num:
-                    await scraper.go_to_page(page, page_num, total_pages)
-                    current_page_in_browser = page_num
-                
+                # [ULTRA ROBUST] 매번 처음부터 검색을 다시 수행하여 완전한 독립 상태를 보장합니다.
+                await page.goto(BASE_URL, timeout=60000)
+                await scraper.perform_initial_search_for_export(page, **initial_params)
+                await scraper.go_to_page(page, page_num, total_pages)
+
                 combined_details = {}
-                initial_xml = item.get("initial_item_xml")
                 if initial_xml:
                     try:
                         root = ET.fromstring(f'<root>{initial_xml}</root>')
@@ -98,20 +86,16 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     except ET.ParseError:
                         print(f"Could not parse initial_item_xml for {content_id}")
 
-                try:
-                    gallery_container = page.locator("ul.gallery-list")
-                    await expect(gallery_container).to_be_visible(timeout=60000) # 타임 아웃 60초
-                except Exception:
-                    pass # 갤러리가 없어도 계속 진행
+                # 아이템 클릭
+                item_to_click = page.locator(f"a:has(strong[name='{content_id}'])")
+                await expect(item_to_click).to_be_visible(timeout=60000)
+                await item_to_click.click()
                 
-                title_to_click = item.get('title')
-                item_to_click = page.get_by_role("listitem").filter(has_text=re.compile(f"^{re.escape(title_to_click)}$"))
-                await expect(item_to_click.first).to_be_visible(timeout=60000)
-                await item_to_click.first.click()
-                
+                # 상세 정보 로드 확인
                 xml_textarea_locator = page.locator("textarea#ResponseXML")
                 await expect(xml_textarea_locator).to_have_value(re.compile(f"<contentid>{content_id}</contentid>"), timeout=60000)
 
+                # 탭을 돌며 정보 스크래핑
                 for tab_name, key_list in tabs_to_fetch:
                     xml_string = ""
                     if tab_name == "공통정보":
@@ -146,20 +130,8 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
 
                 all_attraction_details.append(combined_details)
 
-                await page.go_back()
-                try:
-                    await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=60000) # 타임 아웃 60초
-                except Exception:
-                    pass # 갤러리가 없어도 계속 진행
-
             except Exception as e:
-                print(f"Error fetching details for contentid '{content_id}' on page {page_num}: {e}")
-                try:
-                    await page.goto(scraper.BASE_URL, timeout=60000)
-                    await scraper.perform_initial_search_for_export(page, **initial_params)
-                    current_page_in_browser = 1
-                except Exception as recovery_e:
-                    print(f"Failed to recover for contentid {content_id}. Error: {recovery_e}")
+                print(f"Failed to process contentid '{content_id}' on page {page_num}. Error: {e}. Skipping item.")
                 continue
     finally:
         await scraper.close_page_context(p, browser)
@@ -178,7 +150,7 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
     df = df.reindex(columns=existing_cols).fillna('')
 
     if 'homepage' in df.columns:
-        df['homepage'] = df['homepage'].apply(lambda x: re.search(r'href=["\"](.*?)["\"]', str(x)).group(1) if x and isinstance(x, str) and re.search(r'href=["\"](.*?)["\"]', x) else x)
+        df['homepage'] = df['homepage'].apply(lambda x: re.search(r'href=["\\](.*?)["\\]', str(x)).group(1) if x and isinstance(x, str) and re.search(r'href=["\\](.*?)["\\]', x) else x)
 
     try:
         with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv', prefix='tour_details_all_', encoding='utf-8-sig') as temp_f:

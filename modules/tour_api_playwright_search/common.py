@@ -46,11 +46,20 @@ async def wait_for_xml_update(page: Page, old_xml: str):
 # [최종 개선] 최소 클릭 페이지 이동 로직
 async def go_to_page(page: Page, target_page: int, total_pages: int = 0):
     target_page = int(target_page)
-    
+
+    # 페이지네이션 컨트롤이 존재하는지 먼저 확인
+    paging_container = page.locator("div.paging")
+    if await paging_container.count() == 0:
+        # 페이지네이션이 없고, 목표 페이지가 1이면 이미 도달한 상태
+        if target_page == 1:
+            return
+        # 페이지네이션이 없는데 다른 페이지를 요청하면 오류
+        else:
+            raise Exception(f"Pagination controls not found, but page {target_page} was requested.")
+
     # 무한 루프 방지를 위한 최대 시도 횟수
     for _ in range(50):
         current_page_loc = page.locator("div.paging button.on")
-        # [수정] timeout 10초 -> 1분
         await expect(current_page_loc).to_be_visible(timeout=60000)
         current_page = int(await current_page_loc.get_attribute('value'))
 
