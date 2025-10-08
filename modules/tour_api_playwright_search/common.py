@@ -29,80 +29,94 @@ async def close_page_context(p, browser):
 
 # --- Common Navigation & Scraping Logic ---
 
+# [수정됨] XML 업데이트 대기 로직 개선
+async def wait_for_xml_update(page: Page, old_xml: str):
+    """Waits for the ResponseXML textarea to update with new, non-empty content."""
+    await page.wait_for_function(
+        """(oldXml) => {
+            const el = document.querySelector('textarea#ResponseXML');
+            return el && el.value !== oldXml && el.value.trim().length > 0;
+        }""",
+        arg=old_xml,
+        timeout=0
+    )
+
+# [최종 개선] 최소 클릭 페이지 이동 로직
 async def go_to_page(page: Page, target_page: int, total_pages: int = 0):
     target_page = int(target_page)
     
-    # [수정] 현재 페이지 확인 로직 강화
-    try:
+    # 무한 루프 방지를 위한 최대 시도 횟수
+    for _ in range(50):
         current_page_loc = page.locator("div.paging button.on")
+        # [수정] timeout 10초 -> 1분
+        await expect(current_page_loc).to_be_visible(timeout=60000)
         current_page = int(await current_page_loc.get_attribute('value'))
+
         if current_page == target_page:
-            # 페이지는 맞지만, XML이 로드되기 전일 수 있으므로 확실히 대기
-            await page.wait_for_function(f"() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>{target_page}</pageNo>')", timeout=5000)
+            await page.wait_for_function(f"() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>{target_page}</pageNo>')", timeout=60000)
             return
-    except Exception:
-        # 버튼이 없는 등 예외 상황 시 일단 진행
-        pass
+
+        # 1. 시작점 결정 (앞 절반 or 뒤 절반)
+        go_backwards = total_pages > 0 and target_page > total_pages / 2
         
-    if target_page <= 1:
-        try:
-            # 1페이지로 가는 확실한 방법: 첫 페이지 버튼 클릭
-            first_button = page.locator('div.paging button[name="first"]')
-            if await first_button.is_visible():
+        # 2. 시작점으로 이동 (필요 시)
+        if go_backwards:
+            # 목표가 마지막 페이지 근처인데 현재는 앞쪽에 있을 경우, 맨 끝으로 점프
+            if current_page < total_pages / 2:
                 old_xml = await page.locator("textarea#ResponseXML").input_value()
-                await first_button.click()
-                await page.wait_for_function("(oldXml) => document.querySelector('textarea#ResponseXML').value !== oldXml", arg=old_xml, timeout=0)
-        except Exception:
-             # 버튼이 없으면 이미 1페이지일 가능성이 높음
-            pass
-        await page.wait_for_function("() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>1</pageNo>')", timeout=5000)
-        return
-
-    # [수정] 페이지 이동 로직 최적화
-    for _ in range(50): # 시도 횟수 줄임
-        current_page_loc = page.locator("div.paging button.on")
-        current_page = int(await current_page_loc.get_attribute('value'))
-
-        if current_page == target_page:
-            await page.wait_for_function(f"() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>{current_page}</pageNo>')", timeout=5000)
-            return
-
-        visible_buttons = await page.locator("div.paging button[value]").all()
-        visible_pages = [int(await b.get_attribute('value')) for b in visible_buttons if (await b.get_attribute('value')).isdigit()]
-        
-        button_to_click = None
-        
-        if target_page in visible_pages:
-            button_to_click = page.locator(f"div.paging button[value='{target_page}']")
+                await page.locator('div.paging button[name="last"]').click()
+                await wait_for_xml_update(page, old_xml)
+                # 재탐색을 위해 루프의 처음으로 돌아감
+                continue 
         else:
-            # 페이지 점프 로직 ('다음' 또는 '이전' 그룹 버튼 클릭)
-            if target_page > current_page:
-                button_to_click = page.locator('div.paging button[name="next"]')
-            else:
-                button_to_click = page.locator('div.paging button[name="prev"]')
+            # 목표가 첫 페이지 근처인데 현재는 뒤쪽에 있을 경우, 맨 처음으로 점프
+             if current_page > total_pages / 2:
+                old_xml = await page.locator("textarea#ResponseXML").input_value()
+                await page.locator('div.paging button[name="first"]').click()
+                await wait_for_xml_update(page, old_xml)
+                continue
 
-        if not button_to_click or not await button_to_click.is_visible():
-             raise Exception(f"Pagination logic failed: could not find a button to click to reach page {target_page}.")
+        # 3. 현재 보이는 페이지 번호들 확인
+        visible_buttons = await page.locator("div.paging button[value]").all()
+        visible_pages = [int(await b.get_attribute('value')) for b in visible_buttons if (await b.get_attribute('value') or "").isdigit()]
 
+        # 4. 전략적 이동
         old_xml = await page.locator("textarea#ResponseXML").input_value()
-        try:
-            await button_to_click.click()
-            await page.wait_for_function(
-                "(oldXml) => document.querySelector('textarea#ResponseXML').value !== oldXml",
-                arg=old_xml,
-                timeout=0
-            )
-        except Exception as e:
-            raise Exception(f"A pagination click failed to update content. Target: {target_page}, Current: {current_page}") from e
+        
+        # 4a. 목표 페이지가 보이면 바로 클릭
+        if target_page in visible_pages:
+            await page.locator(f"div.paging button[value='{target_page}']").click()
+        # 4b. 목표 페이지가 현재 블록보다 뒤에 있으면
+        elif target_page > current_page:
+            # 보이는 가장 큰 번호를 눌러 점프
+            await page.locator(f"div.paging button[value='{max(visible_pages)}']").click()
+            await wait_for_xml_update(page, old_xml)
+            # 페이지 블록 이동이 필요하면 다음 버튼 클릭
+            if target_page > max(visible_pages):
+                old_xml = await page.locator("textarea#ResponseXML").input_value()
+                await page.locator('div.paging button[name="next"]').click()
+        # 4c. 목표 페이지가 현재 블록보다 앞에 있으면
+        else: # target_page < current_page
+            # 보이는 가장 작은 번호를 눌러 점프
+            await page.locator(f"div.paging button[value='{min(visible_pages)}']").click()
+            await wait_for_xml_update(page, old_xml)
+            # 페이지 블록 이동이 필요하면 이전 버튼 클릭
+            if target_page < min(visible_pages):
+                old_xml = await page.locator("textarea#ResponseXML").input_value()
+                await page.locator('div.paging button[name="prev"]').click()
+
+        await wait_for_xml_update(page, old_xml)
 
     raise Exception(f"Failed to navigate to page {target_page} after 50 attempts.")
 
 
-# [수정됨] 이 함수는 이제 현재 페이지에 아이템이 있다고 가정하고 동작함
+# [최종] 상세 정보 로직 단순화
 async def scrape_item_detail_xml(page: Page, params):
     try:
-        # 현재 페이지의 XML을 다시 읽어옴
-        await page.wait_for_function(f"() => document.querySelector('textarea#ResponseXML').value.includes('<pageNo>{params.get('pageNo', 1)}</pageNo>')", timeout=5000)
+        gallery_container = page.locator("ul.gallery-list")
+        await expect(gallery_container).to_be_visible(timeout=60000)
+        await expect(gallery_container.locator("li").first).to_be_visible(timeout=60000)
+
         xml_content = await page.locator("textarea#ResponseXML").input_value()
         root = ET.fromstring(xml_content)
         items = root.findall('.//body/items/item')
@@ -114,98 +128,70 @@ async def scrape_item_detail_xml(page: Page, params):
                 break
         
         if title_to_click is None:
-            # 아이템을 못찾으면 에러 발생 (app.py에서 처리)
             raise Exception(f"Could not find item with contentid '{params.get('contentid')}' on page {params.get('pageNo', 1)}.")
         
-        # [핵심 수정] 갤러리 목록에서 정확한 아이템을 클릭
-        item_locator = page.locator(f'ul.gallery-list li:has(div.gallery-tit:has-text("{title_to_click}"))')
-        await expect(item_locator.first).to_be_visible(timeout=5000)
+        item_to_click = page.get_by_role("listitem").filter(has_text=re.compile(f"^{re.escape(title_to_click)}$"))
+        await expect(item_to_click.first).to_be_visible(timeout=60000)
 
-        # 상세 정보 조회를 위한 API 응답을 기다립니다.
         api_url_pattern = "/KorService2/detailCommon2"
         async with page.expect_response(
             lambda response: api_url_pattern in response.url and response.status == 200,
             timeout=0
         ) as response_info:
-            await item_locator.first.click()
+            await item_to_click.first.click()
         
         response = await response_info.value
         detail_xml_content = await response.text()
         
-        # 이후 로직이 정상 동작하도록 textarea의 값을 JS로 직접 설정하여 강제로 변경합니다.
         await page.locator("textarea#ResponseXML").evaluate("(el, content) => el.value = content", detail_xml_content)
 
         xml_textarea_locator = page.locator("textarea#ResponseXML")
+        
+        requested_tab = params.get("tab_name")
 
-        if params.get("tab_name") == "공통정보":
+        # "공통정보" 탭은 이미 로드되었으므로 바로 반환
+        if requested_tab == "공통정보":
             return await xml_textarea_locator.input_value()
 
-        tab_button_locator = page.locator(f'button:has-text("{params.get("tab_name")}")')
+        # 다른 탭들은 클릭 후 XML 갱신을 기다림
+        tab_button_locator = page.locator(f'button:has-text("{requested_tab}")')
         
         if not await tab_button_locator.is_visible():
             return "<response><body><items></items></body></response>"
 
+        # 현재(공통정보) XML 내용을 저장
         initial_xml = await xml_textarea_locator.input_value()
+        # 탭 버튼 클릭
         await tab_button_locator.click()
         
         try:
-            js_function = "(initialXml) => document.querySelector('textarea#ResponseXML').value !== initialXml"
-            await page.wait_for_function(js_function, arg=initial_xml, timeout=5000) # 타임아웃 추가
-            new_xml = await xml_textarea_locator.input_value()
-            if not new_xml.strip():
-                 raise Exception("XML is empty, proceeding to HTML scrape.")
-            return new_xml
+            # XML 내용이 바뀔 때까지 대기
+            await wait_for_xml_update(page, initial_xml)
+            # 바뀐 XML 내용을 반환
+            return await xml_textarea_locator.input_value()
         except Exception:
-            # (이하 HTML 스크래핑 로직은 예외 처리로 유지)
-            try:
-                tab_name = params.get("tab_name")
-                await page.locator('div.tab-content.on h4').wait_for(state='attached', timeout=5000)
-                tab_content_locator = page.locator("div.tab-content.on")
-
-                if (tab_name == "소개정보" or tab_name == "반복정보") and await tab_content_locator.locator("table").is_visible():
-                    xml_item_content = ""
-                    rows = await tab_content_locator.locator("tbody > tr").all()
-                    for row in rows:
-                        th_locator = row.locator("td.th")
-                        td_locator = row.locator("td:not(.th)")
-                        if await th_locator.count() > 0 and await td_locator.count() > 0:
-                            th_text = await th_locator.first.text_content()
-                            td_text = await td_locator.first.text_content()
-                            tag_name = re.sub(r'[^A-Za-z0-9_가-힣]', '', th_text.strip())
-                            if tag_name:
-                                escaped_td_text = html.escape(td_text.strip())
-                                xml_item_content += f"<{tag_name}>{escaped_td_text}</{tag_name}>"
-                    if xml_item_content:
-                        return f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><response><body><items><item>{xml_item_content}</item></items></body></response>'
-
-                elif tab_name == "추가이미지":
-                    try:
-                        first_image_locator = tab_content_locator.locator("img").first
-                        await expect(first_image_locator).to_have_attribute("src", re.compile(r"^http"), timeout=5000)
-                        
-                        image_urls = []
-                        images = await tab_content_locator.locator("img").all()
-                        for img in images:
-                            src = await img.get_attribute("src")
-                            if src and src.startswith('http'):
-                                image_urls.append(src)
-                        
-                        unique_urls = list(dict.fromkeys(image_urls))
-                        if unique_urls:
-                            xml_items = ""
-                            for url in unique_urls:
-                                xml_items += f"<item><originimgurl>{url}</originimgurl></item>"
-                            return f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><response><body><items>{xml_items}</items></body></response>'
-                    except Exception as e:
-                        print(f"DEBUG SCRAPER: Error while waiting for/scraping images: {e}")
-                        return "<response><body><items></items></body></response>"
-
-            except Exception:
-                return "<response><body><items></items></body></response>"
-            
-            return "<response><body><items></items></body></response>"
+            # 탭을 눌렀는데도 XML이 갱신되지 않으면(데이터가 없거나 오류), 빈 응답 반환
+            return "<response><body><items><totalCount>0</totalCount></items></body></response>"
 
     except Exception as e:
-        # 에러 발생 시 스크린샷을 찍어 디버깅에 도움을 줌
         await page.screenshot(path=f"debug_scrape_error_contentid_{params.get('contentid')}.png")
         raise e
+    finally:
+        # [수정됨] 다음 작업을 위해 상태를 초기화하는 로직을 더욱 안정적으로 강화
+        try:
+            common_info_button = page.locator('button:has-text("공통정보")')
+            # 5초간 버튼이 나타나는지 확인
+            if await common_info_button.is_visible(timeout=5000):
+                # 버튼의 부모 li 태그를 찾아 'on' 클래스가 있는지 확인 (이미 선택된 상태인지)
+                parent_li = common_info_button.locator("xpath=..")
+                class_attribute = await parent_li.get_attribute('class') or ''
+                
+                # '공통정보'가 이미 선택된 상태('on')가 아니라면 클릭하여 상태 초기화
+                if 'on' not in class_attribute:
+                    initial_xml = await page.locator("textarea#ResponseXML").input_value()
+                    await common_info_button.click(timeout=5000)
+                    # 상태가 실제로 초기화될 때까지(XML이 바뀔 때까지) 기다림
+                    await wait_for_xml_update(page, initial_xml)
+        except Exception:
+            # 이 작업은 정리 목적이므로, 실패하더라도 전체 프로세스에 영향을 주지 않고 무시하고 넘어갑니다.
+            pass
