@@ -1,7 +1,7 @@
 import gradio as gr
 import math
 from utils import common_params, session, BASE_URL, get_api_items
-from modules.area_search.controls import AREA_CODES, CONTENT_TYPE_CODES
+from modules.tour_api_search.area_search.controls import AREA_CODES, CONTENT_TYPE_CODES
 
 ROWS_PER_PAGE = 10
 PAGE_WINDOW_SIZE = 5

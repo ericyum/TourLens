@@ -6,7 +6,7 @@ import tempfile
 import re
 import traceback
 from utils import common_params, session, BASE_URL, clean_html, is_key_excluded, get_api_items
-from modules.area_search.controls import AREA_CODES, CONTENT_TYPE_CODES
+from modules.tour_api_search.area_search.controls import AREA_CODES, CONTENT_TYPE_CODES
 
 def export_to_csv(area_name, sigungu_name, category_name, progress=gr.Progress()):
     """검색된 모든 결과를 API 응답 순서에 따른 동적 컬럼 CSV 파일로 저장합니다."""

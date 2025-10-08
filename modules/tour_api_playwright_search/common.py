@@ -10,6 +10,8 @@ import xml.etree.ElementTree as ET
 # --- Constants ---
 BASE_URL = "https://api.visitkorea.or.kr/#/useInforArea"
 LOCATION_BASE_URL = "https://api.visitkorea.or.kr/#/useInforLocation" # 내주변 관광정보 URL 추가
+TOTAL_SEARCH_BASE_URL = "https://api.visitkorea.or.kr/#/useInforUnite"
+DATE_SEARCH_BASE_URL = "https://api.visitkorea.or.kr/#/useInforDate"
 LANGUAGE_MAP = {
     "한국어": "Kor", "영어": "Eng", "일어": "Jpn", "중국어(간체)": "Chs",
     "중국어(번체)": "Cht", "독일어": "Ger", "프랑스어": "Fre", "스페인어": "Spa", "러시아어": "Rus",
@@ -195,3 +197,58 @@ async def scrape_item_detail_xml(page: Page, params):
         except Exception:
             # 이 작업은 정리 목적이므로, 실패하더라도 전체 프로세스에 영향을 주지 않고 무시하고 넘어갑니다.
             pass
+
+def parse_xml_to_dict(xml_string: str) -> dict:
+    """Parses an XML string from the API into a flat dictionary."""
+    if not xml_string or "<error>" in xml_string or not xml_string.strip().startswith('<?xml'):
+        return {}
+    try:
+        root = ET.fromstring(xml_string)
+        item_element = root.find('.//body/items/item')
+        if item_element is None:
+            return {}
+        
+        details = {}
+        for child in item_element:
+            if child.text and child.text.strip():
+                clean_text = re.sub(r'<.*?>', '', child.text)
+                details[child.tag] = clean_text.strip()
+        return details
+    except (ET.ParseError, TypeError):
+        return {}
+
+def parse_xml_to_ordered_list(xml_string: str) -> list[tuple[str, str]]:
+    """Parses an XML string from the API into an ordered list of (key, value) tuples."""
+    # [수정] 여러 아이템을 처리할 수 있도록 개선
+    if not xml_string or "<error>" in xml_string or not xml_string.strip().startswith('<?xml'):
+        return []
+    try:
+        root = ET.fromstring(xml_string)
+        items = root.findall('.//body/items/item')
+        if not items:
+            return []
+        
+        details = []
+        # '추가이미지'와 같이 여러 아이템이 오는 경우
+        if len(items) > 1 and any(item.find('originimgurl') is not None for item in items):
+            for item in items:
+                url = item.findtext('originimgurl')
+                if url:
+                    details.append(('originimgurl', url))
+        # '반복정보'나 '소개정보'와 같이 여러 정보가 오는 경우
+        elif len(items) > 1 and any(item.find('infoname') is not None for item in items):
+             for item in items:
+                infoname = item.findtext('infoname')
+                infotext = item.findtext('infotext')
+                if infoname and infotext:
+                     details.append((infoname, infotext))
+        # '공통정보'와 같이 단일 아이템인 경우
+        else:
+            item_element = items[0]
+            for child in item_element:
+                if child.text and child.text.strip():
+                    clean_text = re.sub(r'<.*?>', '', child.text)
+                    details.append((child.tag, clean_text.strip()))
+        return details
+    except (ET.ParseError, TypeError):
+        return []
