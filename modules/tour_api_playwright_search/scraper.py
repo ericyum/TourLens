@@ -15,12 +15,13 @@ from .area.search import (
 )
 
 # --- Re-export dropdown functions for app.py to use ---
-# [수정] 외부에서 사용할 수 있도록 get_page_context와 close_page_context 추가
 __all__ = [
     'get_search_results', 'get_item_detail_xml', 'LANGUAGE_MAP',
     'get_sigungu_options', 'get_large_category_options',
     'get_medium_category_options', 'get_small_category_options',
-    'get_page_context', 'close_page_context', 'perform_initial_search_for_export', 'get_items_from_page'
+    'get_page_context', 'close_page_context', 'perform_initial_search_for_export', 'get_items_from_page',
+    # [수정됨] scrape_item_detail_xml과 go_to_page 함수를 외부에서 직접 호출할 수 있도록 추가
+    'scrape_item_detail_xml', 'go_to_page'
 ]
 
 
@@ -172,6 +173,10 @@ async def get_item_detail_xml(params):
     """The main function to get detail XML for a single item."""
     p, browser, page = await get_page_context()
     try:
+        # 이 함수는 이제 CSV 저장 로직에서는 직접 사용되지 않고,
+        # 일반 상세 보기에서만 사용됩니다.
+        # CSV 로직은 app.py에서 직접 scrape_item_detail_xml을 호출합니다.
+        
         await _navigate_to_results_page(page, **params)
 
         search_button_locator = page.get_by_role('button', name='검색', exact=True)

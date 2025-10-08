@@ -46,6 +46,8 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 import requests
 import re
+# [추가됨] CSV 저장을 위한 playwright expect 임포트
+from playwright.async_api import expect
 
 
 # --- 서울시 관광 정보 검색 UI 및 기능 ---
@@ -379,25 +381,43 @@ def parse_xml_to_dict(xml_string: str) -> dict:
 
 def parse_xml_to_ordered_list(xml_string: str) -> list[tuple[str, str]]:
     """Parses an XML string from the API into an ordered list of (key, value) tuples."""
+    # [수정] 여러 아이템을 처리할 수 있도록 개선
     if not xml_string or "<error>" in xml_string or not xml_string.strip().startswith('<?xml'):
         return []
     try:
         root = ET.fromstring(xml_string)
-        item_element = root.find('.//body/items/item')
-        if item_element is None:
+        items = root.findall('.//body/items/item')
+        if not items:
             return []
         
         details = []
-        for child in item_element:
-            if child.text and child.text.strip():
-                clean_text = re.sub(r'<.*?>', '', child.text)
-                details.append((child.tag, clean_text.strip()))
+        # '추가이미지'와 같이 여러 아이템이 오는 경우
+        if len(items) > 1 and any(item.find('originimgurl') is not None for item in items):
+            for item in items:
+                url = item.findtext('originimgurl')
+                if url:
+                    details.append(('originimgurl', url))
+        # '반복정보'와 같이 여러 정보가 오는 경우
+        elif len(items) > 1 and any(item.find('infoname') is not None for item in items):
+             for item in items:
+                infoname = item.findtext('infoname')
+                infotext = item.findtext('infotext')
+                if infoname and infotext:
+                     details.append((infoname, infotext))
+        # '공통정보', '소개정보'와 같이 단일 아이템인 경우
+        else:
+            item_element = items[0]
+            for child in item_element:
+                if child.text and child.text.strip():
+                    clean_text = re.sub(r'<.*?>', '', child.text)
+                    details.append((child.tag, clean_text.strip()))
         return details
     except (ET.ParseError, TypeError):
         return []
 
+# [최종 수정] CSV 내보내기 함수
 async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=True)):
-    """[수정됨] 단일 브라우저 세션과 올바른 페이지 이동으로 모든 아이템의 상세 정보를 CSV로 저장합니다."""
+    """[수정됨] 단일 브라우저 세션을 사용하여 모든 아이템의 상세 정보를 CSV로 저장합니다."""
     ITEMS_PER_PAGE = 12
     TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
     os.makedirs(TEMP_DIR, exist_ok=True)
@@ -409,61 +429,72 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
     if initial_params.get("cat3") == "선택 안함": initial_params["cat3"] = None
 
     p, browser, page = await scraper.get_page_context()
+    all_items_with_page = []
+    total_pages = 0
     try:
         progress(0, desc="Getting total number of items...")
         total_count = await scraper.perform_initial_search_for_export(page, **initial_params)
 
         if total_count == 0:
             gr.Info("No items to export.")
+            await scraper.close_page_context(p, browser)
             return None
         total_pages = math.ceil(total_count / ITEMS_PER_PAGE)
 
-        all_items_with_page_info = []
-        progress(0.1, desc="Collecting item lists from all pages...")
-        for page_num in progress.tqdm(range(1, total_pages + 1), desc=f"Fetching {total_pages} pages"):
+        # 모든 페이지를 돌며 아이템 목록과 페이지 번호 수집
+        for page_num in progress.tqdm(range(1, total_pages + 1), desc=f"Fetching item lists from {total_pages} pages"):
             try:
-                # [중요] 각 아이템이 몇 페이지에 있었는지 함께 저장합니다.
-                items_on_page = await scraper.get_items_from_page(page, page_num, total_pages)
-                for item in items_on_page:
-                    item['pageNo'] = page_num
-                    all_items_with_page_info.append(item)
+                results = await scraper.get_items_from_page(page, page_num, total_pages)
+                for item in results:
+                    all_items_with_page.append((item, page_num))
             except Exception as e:
                 print(f"Warning: Failed to fetch page {page_num}. Error: {e}")
                 continue
-        
-        if not all_items_with_page_info:
-            gr.Info("Could not fetch any item lists.")
-            return None
-            
-        # [핵심 로직] 상세 정보 수집
-        all_attraction_details = []
-        simple_search_keys, common_info_keys, intro_info_keys, repeat_info_keys = [], [], [], []
-        seen_keys = set()
-        current_page_in_browser = 1 # 현재 브라우저가 보고 있는 페이지 추적
+    
+    except Exception as e:
+        gr.Error(f"Failed during page fetching. Error: {e}")
+        await scraper.close_page_context(p, browser)
+        return None
+    
+    # 목록 수집이 끝난 후에는 브라우저를 재시작하지 않고 그대로 사용
+    
+    if not all_items_with_page:
+        gr.Info("Could not fetch any item lists.")
+        await scraper.close_page_context(p, browser)
+        return None
 
-        def add_key(key, key_list):
-            if key not in seen_keys:
-                seen_keys.add(key)
-                key_list.append(key)
+    all_attraction_details = []
+    simple_search_keys, common_info_keys, intro_info_keys, repeat_info_keys, image_keys = [], [], [], [], []
+    seen_keys = set()
+    
+    def add_key(key, key_list):
+        # 중복되지 않는 키만 순서대로 추가
+        if key not in seen_keys:
+            seen_keys.add(key)
+            key_list.append(key)
 
-        tabs_to_fetch = [
-            ("공통정보", common_info_keys),
-            ("소개정보", intro_info_keys),
-            ("반복정보", repeat_info_keys)
-        ]
-        
-        for item in progress.tqdm(all_items_with_page_info, desc="Collecting details for each attraction"):
+    tabs_to_fetch = [
+        ("공통정보", common_info_keys),
+        ("소개정보", intro_info_keys),
+        ("반복정보", repeat_info_keys),
+        ("추가이미지", image_keys)
+    ]
+    
+    current_page_in_browser = 1 # 초기 검색 후 1페이지에 있으므로
+    try:
+        # 상세 정보 수집 시작
+        for item, page_num in progress.tqdm(all_items_with_page, desc="Collecting details for each attraction"):
             content_id = item.get("contentid")
-            item_page = item.get("pageNo")
-            if not content_id or not item_page: continue
-            
-            try:
-                # [중요] 아이템이 있는 페이지로 브라우저를 이동시킵니다. (필요할 때만)
-                if current_page_in_browser != item_page:
-                    await scraper.common.go_to_page(page, item_page, total_pages)
-                    current_page_in_browser = item_page
+            if not content_id: continue
 
+            try:
+                # 1. 브라우저의 현재 페이지와 아이템의 원래 페이지가 다르면 이동
+                if current_page_in_browser != page_num:
+                    await scraper.go_to_page(page, page_num, total_pages)
+                    current_page_in_browser = page_num
+                
                 combined_details = {}
+                # 초기 검색에서 얻은 기본 정보 추가
                 initial_xml = item.get("initial_item_xml")
                 if initial_xml:
                     try:
@@ -476,48 +507,87 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                                     combined_details[child.tag] = child.text.strip()
                     except ET.ParseError:
                         print(f"Could not parse initial_item_xml for {content_id}")
-                
-                detail_params = initial_params.copy()
-                detail_params.update({
-                    'contentid': content_id,
-                    'pageNo': item_page # 현재 아이템의 페이지 번호를 전달
-                })
 
-                for tab_name, key_list in tabs_to_fetch:
-                    detail_params["tab_name"] = tab_name
-                    # [중요] 이미 올바른 페이지에 있으므로 바로 상세 정보 스크래핑 함수 호출
-                    xml_string = await scraper.common.scrape_item_detail_xml(page, detail_params)
-                    item_details_list = parse_xml_to_ordered_list(xml_string)
-                    for key, value in item_details_list:
-                        add_key(key, key_list)
-                        combined_details[key] = value
+                # 2. 상세 페이지로 이동
+                gallery_container = page.locator("ul.gallery-list")
+                await expect(gallery_container).to_be_visible(timeout=60000)
                 
+                title_to_click = item.get('title')
+                item_to_click = page.get_by_role("listitem").filter(has_text=re.compile(f"^{re.escape(title_to_click)}$"))
+                await expect(item_to_click.first).to_be_visible(timeout=60000)
+                await item_to_click.first.click()
+                
+                # 3. 상세 페이지 로딩 대기 (공통정보 XML 확인)
+                xml_textarea_locator = page.locator("textarea#ResponseXML")
+                await expect(xml_textarea_locator).to_have_value(re.compile(f"<contentid>{content_id}</contentid>"), timeout=60000)
+
+                # 4. 모든 탭 순회하며 정보 수집
+                for tab_name, key_list in tabs_to_fetch:
+                    xml_string = ""
+                    if tab_name == "공통정보":
+                        xml_string = await xml_textarea_locator.input_value()
+                    else:
+                        tab_button = page.locator(f'button:has-text("{tab_name}")')
+                        if await tab_button.is_visible():
+                            initial_xml_before_click = await xml_textarea_locator.input_value()
+                            await tab_button.click()
+                            try:
+                                await scraper.wait_for_xml_update(page, initial_xml_before_click)
+                                xml_string = await xml_textarea_locator.input_value()
+                            except Exception:
+                                pass # XML 업데이트 실패시 xml_string은 "" 유지
+                    
+                    item_details_list = parse_xml_to_ordered_list(xml_string)
+                    if tab_name == "추가이미지":
+                        image_urls = [val for key, val in item_details_list if key == 'originimgurl']
+                        for i, url in enumerate(image_urls[:5]):
+                             img_key = f'image_url_{i+1}'
+                             add_key(img_key, key_list)
+                             combined_details[img_key] = url
+                    else:
+                        for key, value in item_details_list:
+                            original_key = key
+                            counter = 1
+                            while key in combined_details:
+                                counter += 1
+                                key = f"{original_key}_{counter}"
+                            add_key(key, key_list)
+                            combined_details[key] = value
+
                 all_attraction_details.append(combined_details)
 
-            except Exception as e:
-                print(f"Error fetching details for contentid '{content_id}' on page {item_page}: {e}")
-                continue
+                # 5. [중요] 목록 페이지로 돌아가기
+                await page.go_back()
+                await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=60000)
 
-    except Exception as e:
-        gr.Error(f"An unexpected error occurred during the export process: {e}")
-        return None
+
+            except Exception as e:
+                print(f"Error fetching details for contentid '{content_id}' on page {page_num}: {e}")
+                # 복구를 위해 검색 페이지(1페이지)로 돌아감
+                await scraper.perform_initial_search_for_export(page, **initial_params)
+                current_page_in_browser = 1
+                continue
     finally:
-        # 모든 작업이 끝나면 브라우저를 한 번만 닫습니다.
         await scraper.close_page_context(p, browser)
+
 
     if not all_attraction_details:
         gr.Info("No details could be collected.")
         return None
 
-    progress(0.9, desc="Creating CSV file...")
+    progress(0.9, desc="Creating CSV file with specified order...")
     
-    final_ordered_columns = simple_search_keys + common_info_keys + intro_info_keys + repeat_info_keys
+    final_ordered_columns = simple_search_keys + common_info_keys + intro_info_keys + repeat_info_keys + image_keys
+    
     df = pd.DataFrame(all_attraction_details)
-    existing_ordered_columns = [col for col in final_ordered_columns if col in df.columns]
-    df = df[existing_ordered_columns]
+    
+    # 데이터프레임에 존재하는 컬럼만으로 순서 재정렬
+    existing_cols = [col for col in final_ordered_columns if col in df.columns]
+    df = df.reindex(columns=existing_cols) # reindex로 순서 맞추고 없는 컬럼은 NaN으로 채움
+    df = df.fillna('') # NaN을 빈 문자열로 변환
 
     if 'homepage' in df.columns:
-        df['homepage'] = df['homepage'].apply(lambda x: re.search(r'href=[""](.*?)[""]', str(x)).group(1) if re.search(r'href=[""](.*?)[""]', str(x)) else x)
+        df['homepage'] = df['homepage'].apply(lambda x: re.search(r'href=["\'](.*?)["\']', str(x)).group(1) if x and isinstance(x, str) and re.search(r'href=["\'](.*?)["\']', x) else x)
 
     try:
         with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv', prefix='tour_details_all_', encoding='utf-8-sig') as temp_f:
@@ -537,7 +607,7 @@ def create_tour_api_playwright_tab():
     os.makedirs(TEMP_DIR, exist_ok=True)
     NO_IMAGE_PLACEHOLDER_PATH = os.path.join(TEMP_DIR, "no_image.svg")
     if not os.path.exists(NO_IMAGE_PLACEHOLDER_PATH):
-        svg_content = '''<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg">
+        svg_content = '''<svg width="100" height="100" xmlns="[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)">
           <rect width="100%" height="100%" fill="#cccccc"/>
           <text x="50%" y="50%" font-family="Arial" font-size="12" fill="#333333" text-anchor="middle" alignment-baseline="middle">No Image</text>
         </svg>'''
@@ -742,18 +812,32 @@ def create_tour_api_playwright_tab():
         def parse_xml_to_html_table(xml_string):
             try:
                 root = ET.fromstring(xml_string)
-                item = root.find('.//body/items/item')
-                if item is None: return "<p>정보가 없습니다.</p>"
+                items = root.findall('.//body/items/item')
+                if not items:
+                    return "<p>정보가 없습니다.</p>"
+
                 html = "<table>"
-                for child in item:
-                    tag_name = child.tag
-                    if tag_name in ['contentid', 'contenttypeid', 'createdtime', 'modifiedtime', 'firstimage', 'firstimage2', 'cpyrhtDivCd', 'areacode', 'sigungucode', 'cat1', 'cat2', 'cat3', 'mapx', 'mapy', 'mlevel', 'overview', 'title']:
-                        continue
-                    tag_text = child.text.replace('\n', '<br>') if child.text else ''
-                    html += f"<tr><td>{tag_name}</td><td>{tag_text}</td></tr>"
+                
+                # '반복정보'나 '소개정보'와 같이 여러 정보 항목이 있는 경우
+                if len(items) > 1 and any(item.find('infoname') is not None for item in items):
+                    for item in items:
+                        infoname = item.findtext('infoname', '')
+                        infotext = item.findtext('infotext', '').replace('\n', '<br>')
+                        html += f"<tr><td>{infoname}</td><td>{infotext}</td></tr>"
+                # '공통정보'와 같이 단일 항목인 경우
+                else:
+                    item = items[0]
+                    for child in item:
+                        tag_name = child.tag
+                        if tag_name in ['contentid', 'contenttypeid', 'createdtime', 'modifiedtime', 'firstimage', 'firstimage2', 'cpyrhtDivCd', 'areacode', 'sigungucode', 'cat1', 'cat2', 'cat3', 'mapx', 'mapy', 'mlevel', 'overview', 'title']:
+                            continue
+                        tag_text = child.text.replace('\n', '<br>') if child.text else ''
+                        html += f"<tr><td>{tag_name}</td><td>{tag_text}</td></tr>"
+
                 html += "</table>"
                 return html
-            except Exception as e: return f"<p>XML 파싱 중 오류 발생: {e}</p>"
+            except Exception as e:
+                return f"<p>XML 파싱 중 오류 발생: {e}</p>"
 
         def parse_common_info_xml(xml_string):
             try:
@@ -767,21 +851,7 @@ def create_tour_api_playwright_tab():
             try:
                 root = ET.fromstring(xml_string)
                 urls = [item.find('originimgurl').text for item in root.findall('.//body/items/item') if item.find('originimgurl') is not None]
-                local_paths = []
-                for url in urls:
-                    save_path = ""
-                    try:
-                        response = requests.get(url, stream=True)
-                        response.raise_for_status()
-                        filename = url.split('/')[-1].split('?')[0]
-                        save_path = os.path.join(TEMP_DIR, filename)
-                        with open(save_path, 'wb') as f:
-                            for chunk in response.iter_content(chunk_size=8192):
-                                f.write(chunk)
-                        local_paths.append(save_path)
-                    except Exception:
-                        pass
-                return local_paths
+                return urls # URL 리스트를 직접 반환
             except Exception:
                 return []
 
@@ -864,12 +934,12 @@ def create_tour_api_playwright_tab():
             coords = item_info.get('coords', {})
             mapx, mapy = coords.get('mapx'), coords.get('mapy')
             if not mapx or not mapy: return gr.update(value="<p>좌표 정보가 없어 지도를 표시할 수 없습니다.</p>")
-            map_url = f"https://maps.google.com/maps?q={mapy},{mapx}&hl=ko&z=15&output=embed"
+            map_url = f"[https://maps.google.com/maps?q=](https://maps.google.com/maps?q=){mapy},{mapx}&hl=ko&z=15&output=embed"
             return gr.update(value=f'<iframe src="{map_url}" style="width: 100%; height: 400px; border: none;"></iframe>')
 
         def show_loc_map(mapx, mapy):
             if not mapx or not mapy: return gr.update(value="<p>좌표 정보가 없어 지도를 표시할 수 없습니다.</p>")
-            map_url = f"https://maps.google.com/maps?q={mapy},{mapx}&hl=ko&z=15&output=embed"
+            map_url = f"[https://maps.google.com/maps?q=](https://maps.google.com/maps?q=){mapy},{mapx}&hl=ko&z=15&output=embed"
             return gr.update(value=f'<iframe src="{map_url}" style="width: 100%; height: 400px; border: none;"></iframe>')
 
         # --- Attach Event Handlers ---
