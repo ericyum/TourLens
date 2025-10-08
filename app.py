@@ -397,105 +397,122 @@ def parse_xml_to_ordered_list(xml_string: str) -> list[tuple[str, str]]:
         return []
 
 async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=True)):
-    """Fetches ALL items, gets full details including initial search XML, and saves to a CSV file with specific column order."""
+    """[수정됨] 단일 브라우저 세션과 올바른 페이지 이동으로 모든 아이템의 상세 정보를 CSV로 저장합니다."""
     ITEMS_PER_PAGE = 12
     TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
     os.makedirs(TEMP_DIR, exist_ok=True)
 
-    progress(0, desc="Getting total number of items...")
-    try:
-        initial_params = search_params.copy()
-        if initial_params.get("sigungu") == "전체": initial_params["sigungu"] = None
-        if initial_params.get("cat1") == "선택 안함": initial_params["cat1"] = None
-        if initial_params.get("cat2") == "선택 안함": initial_params["cat2"] = None
-        if initial_params.get("cat3") == "선택 안함": initial_params["cat3"] = None
+    initial_params = search_params.copy()
+    if initial_params.get("sigungu") == "전체": initial_params["sigungu"] = None
+    if initial_params.get("cat1") == "선택 안함": initial_params["cat1"] = None
+    if initial_params.get("cat2") == "선택 안함": initial_params["cat2"] = None
+    if initial_params.get("cat3") == "선택 안함": initial_params["cat3"] = None
 
-        _, _, _, total_count = await scraper.get_search_results(**initial_params, pageNo=1, temp_dir=TEMP_DIR)
+    p, browser, page = await scraper.get_page_context()
+    try:
+        progress(0, desc="Getting total number of items...")
+        total_count = await scraper.perform_initial_search_for_export(page, **initial_params)
+
         if total_count == 0:
             gr.Info("No items to export.")
             return None
         total_pages = math.ceil(total_count / ITEMS_PER_PAGE)
-    except Exception as e:
-        gr.Error(f"Failed to get total item count. Error: {e}")
-        return None
 
-    all_items = []
-    progress(0.1, desc="Fetching item lists from all pages...")
-    for page_num in progress.tqdm(range(1, total_pages + 1), desc=f"Fetching {total_pages} pages"):
-        try:
-            results, _, _, _ = await scraper.get_search_results(**initial_params, pageNo=page_num, temp_dir=TEMP_DIR, totalPages=total_pages)
-            all_items.extend(results)
-        except Exception as e:
-            print(f"Warning: Failed to fetch page {page_num}. Error: {e}")
-            continue
-    
-    if not all_items:
-        gr.Info("Could not fetch any item lists.")
-        return None
-
-    all_attraction_details = []
-    simple_search_keys, common_info_keys, intro_info_keys, repeat_info_keys = [], [], [], []
-    seen_keys = set()
-
-    def add_key(key, key_list):
-        if key not in seen_keys:
-            seen_keys.add(key)
-            key_list.append(key)
-
-    tabs_to_fetch = [
-        ("공통정보", common_info_keys), 
-        ("소개정보", intro_info_keys), 
-        ("반복정보", repeat_info_keys)
-    ]
-
-    for item in progress.tqdm(all_items, desc="Collecting and ordering details for each attraction"):
-        content_id = item.get("contentid")
-        if not content_id: continue
-
-        combined_details = {}
-
-        initial_xml = item.get("initial_item_xml")
-        if initial_xml:
-            # The initial XML is a string representation of a single <item> tag
-            # To parse it, we need to wrap it in a dummy root structure.
+        all_items_with_page_info = []
+        progress(0.1, desc="Collecting item lists from all pages...")
+        for page_num in progress.tqdm(range(1, total_pages + 1), desc=f"Fetching {total_pages} pages"):
             try:
-                root = ET.fromstring(f'<root>{initial_xml}</root>')
-                simple_item_element = root.find('item')
-                if simple_item_element is not None:
-                    for child in simple_item_element:
-                        if child.text and child.text.strip():
-                            add_key(child.tag, simple_search_keys)
-                            combined_details[child.tag] = child.text.strip()
-            except ET.ParseError:
-                print(f"Could not parse initial_item_xml for {content_id}")
-
-        detail_params = initial_params.copy()
-        detail_params['contentid'] = content_id
-
-        for tab_name, key_list in tabs_to_fetch:
-            detail_params["tab_name"] = tab_name
-            try:
-                xml_string = await scraper.get_item_detail_xml(detail_params)
-                item_details_list = parse_xml_to_ordered_list(xml_string)
-                for key, value in item_details_list:
-                    add_key(key, key_list)
-                    combined_details[key] = value
+                # [중요] 각 아이템이 몇 페이지에 있었는지 함께 저장합니다.
+                items_on_page = await scraper.get_items_from_page(page, page_num, total_pages)
+                for item in items_on_page:
+                    item['pageNo'] = page_num
+                    all_items_with_page_info.append(item)
             except Exception as e:
-                print(f"Error fetching tab '{tab_name}' for contentid '{content_id}': {e}")
+                print(f"Warning: Failed to fetch page {page_num}. Error: {e}")
                 continue
         
-        all_attraction_details.append(combined_details)
+        if not all_items_with_page_info:
+            gr.Info("Could not fetch any item lists.")
+            return None
+            
+        # [핵심 로직] 상세 정보 수집
+        all_attraction_details = []
+        simple_search_keys, common_info_keys, intro_info_keys, repeat_info_keys = [], [], [], []
+        seen_keys = set()
+        current_page_in_browser = 1 # 현재 브라우저가 보고 있는 페이지 추적
+
+        def add_key(key, key_list):
+            if key not in seen_keys:
+                seen_keys.add(key)
+                key_list.append(key)
+
+        tabs_to_fetch = [
+            ("공통정보", common_info_keys),
+            ("소개정보", intro_info_keys),
+            ("반복정보", repeat_info_keys)
+        ]
+        
+        for item in progress.tqdm(all_items_with_page_info, desc="Collecting details for each attraction"):
+            content_id = item.get("contentid")
+            item_page = item.get("pageNo")
+            if not content_id or not item_page: continue
+            
+            try:
+                # [중요] 아이템이 있는 페이지로 브라우저를 이동시킵니다. (필요할 때만)
+                if current_page_in_browser != item_page:
+                    await scraper.common.go_to_page(page, item_page, total_pages)
+                    current_page_in_browser = item_page
+
+                combined_details = {}
+                initial_xml = item.get("initial_item_xml")
+                if initial_xml:
+                    try:
+                        root = ET.fromstring(f'<root>{initial_xml}</root>')
+                        simple_item_element = root.find('item')
+                        if simple_item_element is not None:
+                            for child in simple_item_element:
+                                if child.text and child.text.strip():
+                                    add_key(child.tag, simple_search_keys)
+                                    combined_details[child.tag] = child.text.strip()
+                    except ET.ParseError:
+                        print(f"Could not parse initial_item_xml for {content_id}")
+                
+                detail_params = initial_params.copy()
+                detail_params.update({
+                    'contentid': content_id,
+                    'pageNo': item_page # 현재 아이템의 페이지 번호를 전달
+                })
+
+                for tab_name, key_list in tabs_to_fetch:
+                    detail_params["tab_name"] = tab_name
+                    # [중요] 이미 올바른 페이지에 있으므로 바로 상세 정보 스크래핑 함수 호출
+                    xml_string = await scraper.common.scrape_item_detail_xml(page, detail_params)
+                    item_details_list = parse_xml_to_ordered_list(xml_string)
+                    for key, value in item_details_list:
+                        add_key(key, key_list)
+                        combined_details[key] = value
+                
+                all_attraction_details.append(combined_details)
+
+            except Exception as e:
+                print(f"Error fetching details for contentid '{content_id}' on page {item_page}: {e}")
+                continue
+
+    except Exception as e:
+        gr.Error(f"An unexpected error occurred during the export process: {e}")
+        return None
+    finally:
+        # 모든 작업이 끝나면 브라우저를 한 번만 닫습니다.
+        await scraper.close_page_context(p, browser)
 
     if not all_attraction_details:
         gr.Info("No details could be collected.")
         return None
 
-    progress(0.9, desc="Creating CSV file with specified order...")
+    progress(0.9, desc="Creating CSV file...")
     
     final_ordered_columns = simple_search_keys + common_info_keys + intro_info_keys + repeat_info_keys
-    
     df = pd.DataFrame(all_attraction_details)
-    
     existing_ordered_columns = [col for col in final_ordered_columns if col in df.columns]
     df = df[existing_ordered_columns]
 
