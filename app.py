@@ -397,14 +397,14 @@ def parse_xml_to_ordered_list(xml_string: str) -> list[tuple[str, str]]:
                 url = item.findtext('originimgurl')
                 if url:
                     details.append(('originimgurl', url))
-        # '반복정보'와 같이 여러 정보가 오는 경우
+        # '반복정보'나 '소개정보'와 같이 여러 정보가 오는 경우
         elif len(items) > 1 and any(item.find('infoname') is not None for item in items):
              for item in items:
                 infoname = item.findtext('infoname')
                 infotext = item.findtext('infotext')
                 if infoname and infotext:
                      details.append((infoname, infotext))
-        # '공통정보', '소개정보'와 같이 단일 아이템인 경우
+        # '공통정보'와 같이 단일 아이템인 경우
         else:
             item_element = items[0]
             for child in item_element:
@@ -417,7 +417,7 @@ def parse_xml_to_ordered_list(xml_string: str) -> list[tuple[str, str]]:
 
 # [최종 수정] CSV 내보내기 함수
 async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=True)):
-    """[수정됨] 단일 브라우저 세션을 사용하여 모든 아이템의 상세 정보를 CSV로 저장합니다."""
+    """[수정됨] 단일 브라우저 세션과 '뒤로 가기' 로직으로 모든 아이템의 상세 정보를 CSV로 저장합니다."""
     ITEMS_PER_PAGE = 12
     TEMP_DIR = os.path.join(os.path.dirname(__file__), "Temp")
     os.makedirs(TEMP_DIR, exist_ok=True)
@@ -558,18 +558,21 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
 
                 # 5. [중요] 목록 페이지로 돌아가기
                 await page.go_back()
+                # 목록으로 돌아왔는지 확인
                 await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=60000)
-
 
             except Exception as e:
                 print(f"Error fetching details for contentid '{content_id}' on page {page_num}: {e}")
-                # 복구를 위해 검색 페이지(1페이지)로 돌아감
-                await scraper.perform_initial_search_for_export(page, **initial_params)
-                current_page_in_browser = 1
+                # 복구를 위해 검색 페이지(1페이지)로 돌아가서 다시 시도
+                try:
+                    await page.goto(scraper.BASE_URL, timeout=60000)
+                    await scraper.perform_initial_search_for_export(page, **initial_params)
+                    current_page_in_browser = 1
+                except Exception as recovery_e:
+                    print(f"Failed to recover for contentid {content_id}. Error: {recovery_e}")
                 continue
     finally:
         await scraper.close_page_context(p, browser)
-
 
     if not all_attraction_details:
         gr.Info("No details could be collected.")
@@ -581,10 +584,8 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
     
     df = pd.DataFrame(all_attraction_details)
     
-    # 데이터프레임에 존재하는 컬럼만으로 순서 재정렬
     existing_cols = [col for col in final_ordered_columns if col in df.columns]
-    df = df.reindex(columns=existing_cols) # reindex로 순서 맞추고 없는 컬럼은 NaN으로 채움
-    df = df.fillna('') # NaN을 빈 문자열로 변환
+    df = df.reindex(columns=existing_cols).fillna('')
 
     if 'homepage' in df.columns:
         df['homepage'] = df['homepage'].apply(lambda x: re.search(r'href=["\'](.*?)["\']', str(x)).group(1) if x and isinstance(x, str) and re.search(r'href=["\'](.*?)["\']', x) else x)
@@ -607,7 +608,7 @@ def create_tour_api_playwright_tab():
     os.makedirs(TEMP_DIR, exist_ok=True)
     NO_IMAGE_PLACEHOLDER_PATH = os.path.join(TEMP_DIR, "no_image.svg")
     if not os.path.exists(NO_IMAGE_PLACEHOLDER_PATH):
-        svg_content = '''<svg width="100" height="100" xmlns="[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)">
+        svg_content = '''<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg">
           <rect width="100%" height="100%" fill="#cccccc"/>
           <text x="50%" y="50%" font-family="Arial" font-size="12" fill="#333333" text-anchor="middle" alignment-baseline="middle">No Image</text>
         </svg>'''
@@ -934,12 +935,12 @@ def create_tour_api_playwright_tab():
             coords = item_info.get('coords', {})
             mapx, mapy = coords.get('mapx'), coords.get('mapy')
             if not mapx or not mapy: return gr.update(value="<p>좌표 정보가 없어 지도를 표시할 수 없습니다.</p>")
-            map_url = f"[https://maps.google.com/maps?q=](https://maps.google.com/maps?q=){mapy},{mapx}&hl=ko&z=15&output=embed"
+            map_url = f"https://maps.google.com/maps?q={mapy},{mapx}&hl=ko&z=15&output=embed"
             return gr.update(value=f'<iframe src="{map_url}" style="width: 100%; height: 400px; border: none;"></iframe>')
 
         def show_loc_map(mapx, mapy):
             if not mapx or not mapy: return gr.update(value="<p>좌표 정보가 없어 지도를 표시할 수 없습니다.</p>")
-            map_url = f"[https://maps.google.com/maps?q=](https://maps.google.com/maps?q=){mapy},{mapx}&hl=ko&z=15&output=embed"
+            map_url = f"https://maps.google.com/maps?q={mapy},{mapx}&hl=ko&z=15&output=embed"
             return gr.update(value=f'<iframe src="{map_url}" style="width: 100%; height: 400px; border: none;"></iframe>')
 
         # --- Attach Event Handlers ---

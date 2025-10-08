@@ -1,10 +1,9 @@
 import asyncio
 from playwright.async_api import Page
-from modules.tour_api_playwright_search.common import get_page_context, close_page_context, BASE_URL
-from utils import get_api_items
+# [수정] 절대 경로 대신 안정적인 상대 경로로 변경
+from ..common import get_page_context, close_page_context, BASE_URL
 
-# This file now contains only the self-contained functions for getting dropdown options,
-# styled after the working reference project 'c'.
+# This file now contains only the self-contained functions for getting dropdown options.
 
 async def get_sigungu_options(province):
     if not province or province == "전국": return []
