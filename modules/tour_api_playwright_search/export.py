@@ -98,8 +98,11 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     except ET.ParseError:
                         print(f"Could not parse initial_item_xml for {content_id}")
 
-                gallery_container = page.locator("ul.gallery-list")
-                await expect(gallery_container).to_be_visible(timeout=60000)
+                try:
+                    gallery_container = page.locator("ul.gallery-list")
+                    await expect(gallery_container).to_be_visible(timeout=60000) # 타임 아웃 60초
+                except Exception:
+                    pass # 갤러리가 없어도 계속 진행
                 
                 title_to_click = item.get('title')
                 item_to_click = page.get_by_role("listitem").filter(has_text=re.compile(f"^{re.escape(title_to_click)}$"))
@@ -144,7 +147,10 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                 all_attraction_details.append(combined_details)
 
                 await page.go_back()
-                await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=60000)
+                try:
+                    await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=60000) # 타임 아웃 60초
+                except Exception:
+                    pass # 갤러리가 없어도 계속 진행
 
             except Exception as e:
                 print(f"Error fetching details for contentid '{content_id}' on page {page_num}: {e}")
