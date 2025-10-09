@@ -145,8 +145,9 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     print("    목록 페이지로 돌아갑니다...")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_before_goback.png"))
                     await page.go_back()
-                    await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=30000)
-                    await expect(page.locator("div.paging")).to_be_visible(timeout=10000)
+                    # [수정] SPA의 불안정한 상태 복원을 감안하여, 핵심 UI 요소가 보일 때까지 충분히 대기
+                    await expect(page.locator("div.paging")).to_be_visible(timeout=30000)
+                    await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=15000)
                     print("    목록 페이지로 복귀 완료.")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_after_goback.png"))
 
@@ -154,11 +155,14 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     print(f"콘텐츠 ID '{content_id}' 처리 중 오류 발생: {e}. 다음 항목으로 넘어갑니다.")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_error.png"))
                     try:
-                        await page.go_back()
-                        await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=15000)
-                    except Exception as recovery_e:
-                        print(f"복구 실패: {recovery_e}. 현재 페이지를 다시 로드합니다.")
+                        # [수정] 가장 안정적인 복구 방법: 처음부터 다시 검색하여 현재 페이지로 이동
+                        print(f"복구를 시도합니다. {page_num} 페이지의 처음부터 다시 로드합니다.")
+                        await page.goto(scraper.BASE_URL, timeout=0, wait_until="networkidle")
+                        await scraper.perform_initial_search_for_export(page, **initial_params)
                         await scraper.go_to_page(page, page_num, total_pages)
+                        print("페이지 재로드 및 복구 완료. 다음 아이템으로 진행합니다.")
+                    except Exception as recovery_e:
+                        print(f"치명적인 복구 오류 발생: {recovery_e}. 이 아이템을 건너뛰고 계속합니다.")
                     continue
 
     finally:

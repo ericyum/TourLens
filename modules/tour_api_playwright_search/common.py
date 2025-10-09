@@ -99,18 +99,22 @@ async def go_to_page(page: Page, target_page: int, total_pages: int = 0):
             await page.locator(f"div.paging button[value='{target_page}']").click()
         # 4b. 목표 페이지가 현재 블록보다 뒤에 있으면
         elif target_page > current_page:
-            # 보이는 가장 큰 번호를 눌러 점프
-            await page.locator(f"div.paging button[value='{max(visible_pages)}']").click()
-            await wait_for_xml_update(page, old_xml)
+            # 보이는 가장 큰 번호를 눌러 점프 (단, 이미 블록의 끝이 아닐 경우에만)
+            if current_page < max(visible_pages):
+                await page.locator(f"div.paging button[value='{max(visible_pages)}']").click()
+                await wait_for_xml_update(page, old_xml)
+
             # 페이지 블록 이동이 필요하면 다음 버튼 클릭
             if target_page > max(visible_pages):
                 old_xml = await page.locator("textarea#ResponseXML").input_value()
                 await page.locator('div.paging button[name="next"]').click()
         # 4c. 목표 페이지가 현재 블록보다 앞에 있으면
         else: # target_page < current_page
-            # 보이는 가장 작은 번호를 눌러 점프
-            await page.locator(f"div.paging button[value='{min(visible_pages)}']").click()
-            await wait_for_xml_update(page, old_xml)
+            # 보이는 가장 작은 번호를 눌러 점프 (단, 이미 블록의 시작이 아닐 경우에만)
+            if current_page > min(visible_pages):
+                await page.locator(f"div.paging button[value='{min(visible_pages)}']").click()
+                await wait_for_xml_update(page, old_xml)
+
             # 페이지 블록 이동이 필요하면 이전 버튼 클릭
             if target_page < min(visible_pages):
                 old_xml = await page.locator("textarea#ResponseXML").input_value()
