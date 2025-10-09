@@ -70,22 +70,19 @@ async def go_to_page(page: Page, target_page: int, total_pages: int = 0):
         # 1. 시작점 결정 (앞 절반 or 뒤 절반)
         go_backwards = total_pages > 0 and target_page > total_pages / 2
         
-        # 2. 시작점으로 이동 (필요 시)
-        if go_backwards:
-            # 목표가 마지막 페이지 근처인데 현재는 앞쪽에 있을 경우, 맨 끝으로 점프
-            if current_page < total_pages / 2:
-                old_xml = await page.locator("textarea#ResponseXML").input_value()
-                await page.locator('div.paging button[name="last"]').click()
-                await wait_for_xml_update(page, old_xml)
-                # 재탐색을 위해 루프의 처음으로 돌아감
-                continue 
-        else:
-            # 목표가 첫 페이지 근처인데 현재는 뒤쪽에 있을 경우, 맨 처음으로 점프
-             if current_page > total_pages / 2:
-                old_xml = await page.locator("textarea#ResponseXML").input_value()
-                await page.locator('div.paging button[name="first"]').click()
-                await wait_for_xml_update(page, old_xml)
-                continue
+        # 2. 시작점으로 이동하는 로직을 제거하여 페이지 이동을 단순화하고 안정성을 높입니다.
+        # if go_backwards:
+        #     if current_page < total_pages / 2:
+        #         old_xml = await page.locator("textarea#ResponseXML").input_value()
+        #         await page.locator('div.paging button[name="last"]').click()
+        #         await wait_for_xml_update(page, old_xml)
+        #         continue 
+        # else:
+        #      if current_page > total_pages / 2:
+        #         old_xml = await page.locator("textarea#ResponseXML").input_value()
+        #         await page.locator('div.paging button[name="first"]').click()
+        #         await wait_for_xml_update(page, old_xml)
+        #         continue
 
         # 3. 현재 보이는 페이지 번호들 확인
         visible_buttons = await page.locator("div.paging button[value]").all()
