@@ -145,6 +145,7 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     print("    목록 페이지로 돌아갑니다...")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_before_goback.png"))
                     await page.go_back()
+                    await page.wait_for_load_state('networkidle', timeout=15000)
                     await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=30000)
                     await expect(page.locator("div.paging")).to_be_visible(timeout=10000)
                     print("    목록 페이지로 복귀 완료.")
