@@ -144,7 +144,7 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     # --- 6. 목록으로 돌아가기 ---
                     print("    목록 페이지로 돌아갑니다...")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_before_goback.png"))
-                    await page.go_back(waitUntil='domcontentloaded')
+                    await page.go_back()
                     await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=30000)
                     await expect(page.locator("div.paging")).to_be_visible(timeout=10000)
                     print("    목록 페이지로 복귀 완료.")
@@ -154,7 +154,7 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     print(f"콘텐츠 ID '{content_id}' 처리 중 오류 발생: {e}. 다음 항목으로 넘어갑니다.")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_error.png"))
                     try:
-                        await page.go_back(waitUntil='domcontentloaded')
+                        await page.go_back()
                         await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=15000)
                     except Exception as recovery_e:
                         print(f"복구 실패: {recovery_e}. 현재 페이지를 다시 로드합니다.")
