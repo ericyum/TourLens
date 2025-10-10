@@ -128,8 +128,12 @@ def create_tour_api_playwright_tab():
                                 close_map_button = gr.Button("지도 닫기")
                         with gr.TabItem("소개정보", id="소개정보"):
                             intro_info_markdown = gr.Markdown("소개정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
-                        with gr.TabItem("반복정보", id="반복정보"):
+                        with gr.TabItem("반복정보", id="반복정보", visible=True) as repeat_info_tab:
                             repeat_info_markdown = gr.Markdown("반복정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
+                        with gr.TabItem("코스 정보", id="코스 정보", visible=False) as course_info_tab:
+                            course_info_markdown = gr.Markdown("코스 정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
+                        with gr.TabItem("객실 정보", id="객실 정보", visible=False) as room_info_tab:
+                            room_info_markdown = gr.Markdown("객실 정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
                         with gr.TabItem("추가이미지", id="추가이미지"):
                             additional_images_gallery = gr.Gallery(label="추가 이미지", columns=5, height="auto", object_fit="contain")
         
@@ -259,7 +263,7 @@ def create_tour_api_playwright_tab():
         async def change_page(page_num, stored_params):
             async for update in process_search(stored_params, int(page_num)): yield update
 
-        def parse_xml_to_html_table(xml_string):
+        def parse_xml_to_html_table(xml_string, content_type_id):
             try:
                 root = ET.fromstring(xml_string)
                 items = root.findall('.//body/items/item')
@@ -267,12 +271,33 @@ def create_tour_api_playwright_tab():
                     return "<p>정보가 없습니다.</p>"
 
                 html = "<table>"
-                
-                if len(items) > 1 and any(item.find('infoname') is not None for item in items):
+                # 코스 정보 또는 객실 정보 처리
+                if content_type_id in ['25', '32']:
+                    if content_type_id == '25': # 여행 코스
+                        headers = {'subname': '코스명', 'subdetailoverview': '개요'}
+                    else: # 숙박
+                        headers = {'roomtitle': '객실명', 'roomsize1': '크기(평)', 'roombasecount': '기본인원', 'roommaxcount': '최대인원', 'roomoffseasonminfee1': '비수기 주중 최소', 'roompeakseasonminfee1': '성수기 주중 최소'}
+                    
+                    html += "<thead><tr>"
+                    for header_en, header_ko in headers.items():
+                        html += f"<th>{header_ko}</th>"
+                    html += "</tr></thead><tbody>"
+
+                    for item in items:
+                        html += "<tr>"
+                        for key, _ in headers.items():
+                            text = item.findtext(key, '').replace('\n', '<br>')
+                            html += f"<td>{text}</td>"
+                        html += "</tr>"
+                    html += "</tbody>"
+
+                # 반복 정보 처리
+                elif any(item.find('infoname') is not None for item in items):
                     for item in items:
                         infoname = item.findtext('infoname', '')
                         infotext = item.findtext('infotext', '').replace('\n', '<br>')
                         html += f"<tr><td>{infoname}</td><td>{infotext}</td></tr>"
+                # 공통/소개 정보 처리
                 else:
                     item = items[0]
                     for child in item:
@@ -310,6 +335,7 @@ def create_tour_api_playwright_tab():
             
             selected_item = g_data[evt.index]
             title = selected_item['title']
+            content_type_id = selected_item.get('contenttypeid')
             
             info_for_tabs = s_params.copy()
             if info_for_tabs.get("province") == "전국": info_for_tabs["province"] = None
@@ -318,7 +344,7 @@ def create_tour_api_playwright_tab():
             if info_for_tabs.get("cat1") == "선택 안함": info_for_tabs["cat1"] = None
             if info_for_tabs.get("cat2") == "선택 안함": info_for_tabs["cat2"] = None
             if info_for_tabs.get("cat3") == "선택 안함": info_for_tabs["cat3"] = None
-            info_for_tabs.update({"contentid": selected_item.get("contentid"), "pageNo": c_page, "coords": {"mapx": selected_item.get("mapx"), "mapy": selected_item.get("mapy")}})
+            info_for_tabs.update({"contentid": selected_item.get("contentid"), "contenttypeid": content_type_id, "pageNo": c_page, "coords": {"mapx": selected_item.get("mapx"), "mapy": selected_item.get("mapy")}})
 
             yield {status_output: f"'{title}' 상세 정보 로딩 중...", detail_view_column: gr.update(visible=False)}
             
@@ -339,18 +365,28 @@ def create_tour_api_playwright_tab():
                 
                 common_data = parse_common_info_xml(xml_string)
                 
+                # 탭 가시성 제어
+                is_course = content_type_id == '25'
+                is_lodging = content_type_id == '32'
+                is_normal_repeat = not is_course and not is_lodging
+
                 update_dict = {
                     status_output: f"'{title}' 상세 정보 로드 완료.",
                     detail_view_column: gr.update(visible=True),
                     detail_title: gr.update(value=f"### {common_data.get('title', '')}"),
                     detail_image: gr.update(value=common_data.get('firstimage')),
                     detail_overview: gr.update(value=common_data.get('overview')),
-                    detail_info_table: gr.update(value=parse_xml_to_html_table(xml_string)),
+                    detail_info_table: gr.update(value=parse_xml_to_html_table(xml_string, content_type_id)),
                     selected_item_info: info_for_tabs,
                     map_group: gr.update(visible=False),
                     intro_info_markdown: "소개정보 탭을 선택하여 정보를 확인하세요.",
                     repeat_info_markdown: "반복정보 탭을 선택하여 정보를 확인하세요.",
-                    additional_images_gallery: []
+                    course_info_markdown: "코스 정보 탭을 선택하여 정보를 확인하세요.",
+                    room_info_markdown: "객실 정보 탭을 선택하여 정보를 확인하세요.",
+                    additional_images_gallery: [],
+                    repeat_info_tab: gr.update(visible=is_normal_repeat),
+                    course_info_tab: gr.update(visible=is_course),
+                    room_info_tab: gr.update(visible=is_lodging),
                 }
                 yield update_dict
             except Exception as e:
@@ -362,9 +398,13 @@ def create_tour_api_playwright_tab():
                 return
             
             tab_name = evt.value
+            content_type_id = item_info.get('contenttypeid')
+
             yield {
                 intro_info_markdown: "로딩 중..." if tab_name == "소개정보" else gr.update(),
                 repeat_info_markdown: "로딩 중..." if tab_name == "반복정보" else gr.update(),
+                course_info_markdown: "로딩 중..." if tab_name == "코스 정보" else gr.update(),
+                room_info_markdown: "로딩 중..." if tab_name == "객실 정보" else gr.update(),
                 additional_images_gallery: [] if tab_name == "추가이미지" else gr.update()
             }
             
@@ -384,12 +424,18 @@ def create_tour_api_playwright_tab():
                 yield {
                     intro_info_markdown: xml_string if tab_name == "소개정보" else gr.update(),
                     repeat_info_markdown: xml_string if tab_name == "반복정보" else gr.update(),
+                    course_info_markdown: xml_string if tab_name == "코스 정보" else gr.update(),
+                    room_info_markdown: xml_string if tab_name == "객실 정보" else gr.update(),
                     additional_images_gallery: []
                 }
                 return
 
-            if tab_name == "소개정보": yield {intro_info_markdown: parse_xml_to_html_table(xml_string)}
-            elif tab_name == "반복정보": yield {repeat_info_markdown: parse_xml_to_html_table(xml_string)}
+            html_table = parse_xml_to_html_table(xml_string, content_type_id)
+
+            if tab_name == "소개정보": yield {intro_info_markdown: html_table}
+            elif tab_name == "반복정보": yield {repeat_info_markdown: html_table}
+            elif tab_name == "코스 정보": yield {course_info_markdown: html_table}
+            elif tab_name == "객실 정보": yield {room_info_markdown: html_table}
             elif tab_name == "추가이미지": yield {additional_images_gallery: parse_images_xml(xml_string)}
 
         def show_map(item_info):
