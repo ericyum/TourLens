@@ -131,9 +131,9 @@ def create_tour_api_playwright_tab():
                         with gr.TabItem("반복정보", id="반복정보", visible=False) as repeat_info_tab:
                             repeat_info_markdown = gr.Markdown("반복정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
                         with gr.TabItem("코스정보", id="코스정보", visible=False) as course_info_tab:
-                            course_info_markdown = gr.Markdown("코스 정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
-                        with gr.Tab정보("객실정보", id="객실정보", visible=False) as room_info_tab:
-                            room_info_markdown = gr.Markdown("객실 정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
+                            course_info_markdown = gr.Markdown("코스정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
+                        with gr.TabItem("객실정보", id="객실정보", visible=False) as room_info_tab:
+                            room_info_markdown = gr.Markdown("객실정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
                         with gr.TabItem("추가이미지", id="추가이미지"):
                             additional_images_gallery = gr.Gallery(label="추가 이미지", columns=5, height="auto", object_fit="contain")
         
