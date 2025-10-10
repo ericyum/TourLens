@@ -128,11 +128,11 @@ def create_tour_api_playwright_tab():
                                 close_map_button = gr.Button("지도 닫기")
                         with gr.TabItem("소개정보", id="소개정보"):
                             intro_info_markdown = gr.Markdown("소개정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
-                        with gr.TabItem("반복정보", id="반복정보", visible=True) as repeat_info_tab:
+                        with gr.TabItem("반복정보", id="반복정보", visible=False) as repeat_info_tab:
                             repeat_info_markdown = gr.Markdown("반복정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
-                        with gr.TabItem("코스 정보", id="코스 정보", visible=False) as course_info_tab:
+                        with gr.TabItem("코스정보", id="코스정보", visible=False) as course_info_tab:
                             course_info_markdown = gr.Markdown("코스 정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
-                        with gr.TabItem("객실 정보", id="객실 정보", visible=False) as room_info_tab:
+                        with gr.Tab정보("객실정보", id="객실정보", visible=False) as room_info_tab:
                             room_info_markdown = gr.Markdown("객실 정보 탭을 선택하여 정보를 확인하세요.", elem_classes="tab-content-markdown")
                         with gr.TabItem("추가이미지", id="추가이미지"):
                             additional_images_gallery = gr.Gallery(label="추가 이미지", columns=5, height="auto", object_fit="contain")
@@ -431,8 +431,8 @@ def create_tour_api_playwright_tab():
                 update_dict = {k: gr.update() for k in [intro_info_markdown, repeat_info_markdown, course_info_markdown, room_info_markdown, additional_images_gallery]}
                 if tab_name == "소개정보": update_dict[intro_info_markdown] = xml_string
                 elif tab_name == "반복정보": update_dict[repeat_info_markdown] = xml_string
-                elif tab_name == "코스 정보": update_dict[course_info_markdown] = xml_string
-                elif tab_name == "객실 정보": update_dict[room_info_markdown] = xml_string
+                elif tab_name == "코스정보": update_dict[course_info_markdown] = xml_string
+                elif tab_name == "객실정보": update_dict[room_info_markdown] = xml_string
                 yield update_dict
                 return
 
@@ -442,8 +442,8 @@ def create_tour_api_playwright_tab():
             update_dict = {k: gr.update() for k in [intro_info_markdown, repeat_info_markdown, course_info_markdown, room_info_markdown, additional_images_gallery]}
             if tab_name == "소개정보": update_dict[intro_info_markdown] = html_table
             elif tab_name == "반복정보": update_dict[repeat_info_markdown] = html_table
-            elif tab_name == "코스 정보": update_dict[course_info_markdown] = html_table
-            elif tab_name == "객실 정보": update_dict[room_info_markdown] = html_table
+            elif tab_name == "코스정보": update_dict[course_info_markdown] = html_table
+            elif tab_name == "객실정보": update_dict[room_info_markdown] = html_table
             elif tab_name == "추가이미지": update_dict[additional_images_gallery] = images
             yield update_dict
 
