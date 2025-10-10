@@ -219,8 +219,20 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     await page.wait_for_load_state('networkidle')
 
                 except Exception as e:
-                    print(f"콘텐츠 ID '{content_id}' 처리 중 오류 발생: {e}. 다음 항목으로 넘어갑니다.")
+                    error_message = f"콘텐츠 ID '{content_id}' 처리 중 오류 발생: {e}. 복구를 시도하고 다음 항목으로 넘어갑니다."
+                    print(error_message)
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_error.png"))
+
+                    # [요청 수정] 아이템을 건너뛰는 것이 확정된 이 시점에 바로 로그를 기록
+                    try:
+                        log_file_path = "unrecoverable_error_log.txt"
+                        log_content = f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - [복구 후 건너뜀] {page_num} 페이지의 {i + 1} 번째 관광 데이터(콘텐츠 ID: {content_id})를 건너뛰었습니다. 최초 오류: {e}\n"
+                        with open(log_file_path, "a", encoding="utf-8") as f:
+                            f.write(log_content)
+                    except Exception as log_e:
+                        print(f"    - 파일 로그 작성에 실패했습니다: {log_e}")
+
+                    # 다음 아이템을 위해 복구 시도
                     try:
                         print(f"복구를 시도합니다. {page_num} 페이지의 처음부터 다시 로드합니다.")
                         await page.goto(scraper.BASE_URL, wait_until="load")
@@ -230,9 +242,10 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                         print("페이지 재로드 및 복구 완료. 다음 아이템으로 진행합니다.")
                     except Exception as recovery_e:
                         print(f"치명적인 복구 오류 발생: {recovery_e}. 이 아이템을 건너뛰고 계속합니다.")
+                        # 복구 자체도 실패하면 추가 로그 기록
                         try:
                             log_file_path = "unrecoverable_error_log.txt"
-                            log_content = f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {page_num} 페이지의 {i + 1} 번째 관광 데이터(콘텐츠 ID: {content_id})를 건너뛰었습니다. 오류: {recovery_e}\n"
+                            log_content = f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - [복구 실패] {page_num} 페이지의 {i + 1} 번째 관광 데이터(콘텐츠 ID: {content_id})의 복구에 실패했습니다. 오류: {recovery_e}\n"
                             with open(log_file_path, "a", encoding="utf-8") as f:
                                 f.write(log_content)
                         except Exception as log_e:
