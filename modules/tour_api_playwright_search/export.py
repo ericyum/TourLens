@@ -113,7 +113,7 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                         
                         try:
                             # [수정] 더 안정적인 expect 구문과 넉넉한 타임아웃(5초)으로 변경
-                            await expect(tab_locator).to_be_visible(timeout=60000)
+                            await expect(tab_locator).to_be_visible(timeout=10000)
                             
                             print(f"    - {tab_name} 탭으로 이동 및 정보 수집 중...")
                             initial_xml = await xml_textarea_locator.input_value()
@@ -174,7 +174,7 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     try:
                         # [수정] 가장 안정적인 복구 방법: 처음부터 다시 검색하여 현재 페이지로 이동
                         print(f"복구를 시도합니다. {page_num} 페이지의 처음부터 다시 로드합니다.")
-                        await page.goto(scraper.BASE_URL, timeout=0, wait_until="networkidle")
+                        await page.goto(scraper.BASE_URL, wait_until="load")
                         await page.wait_for_load_state('domcontentloaded') # 페이지 로드 대기 추가
                         await scraper.perform_initial_search_for_export(page, **initial_params)
                         await scraper.go_to_page(page, page_num, total_pages)
