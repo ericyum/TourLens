@@ -263,7 +263,7 @@ def create_tour_api_playwright_tab():
         async def change_page(page_num, stored_params):
             async for update in process_search(stored_params, int(page_num)): yield update
 
-        def parse_xml_to_html_table(xml_string, content_type_id):
+        def parse_xml_to_html_table(xml_string, content_type_id, tab_name="공통정보"):
             try:
                 root = ET.fromstring(xml_string)
                 items = root.findall('.//body/items/item')
@@ -271,28 +271,34 @@ def create_tour_api_playwright_tab():
                     return "<p>정보가 없습니다.</p>"
 
                 html = "<table>"
+                
                 # 코스 정보 또는 객실 정보 처리
-                if content_type_id in ['25', '32']:
-                    if content_type_id == '25': # 여행 코스
-                        headers = {'subname': '코스명', 'subdetailoverview': '개요'}
-                    else: # 숙박
-                        headers = {'roomtitle': '객실명', 'roomsize1': '크기(평)', 'roombasecount': '기본인원', 'roommaxcount': '최대인원', 'roomoffseasonminfee1': '비수기 주중 최소', 'roompeakseasonminfee1': '성수기 주중 최소'}
-                    
+                if tab_name == "코스 정보":
+                    headers = {'subname': '코스명', 'subdetailoverview': '개요'}
                     html += "<thead><tr>"
-                    for header_en, header_ko in headers.items():
-                        html += f"<th>{header_ko}</th>"
+                    for header_ko in headers.values(): html += f"<th>{header_ko}</th>"
                     html += "</tr></thead><tbody>"
-
                     for item in items:
                         html += "<tr>"
-                        for key, _ in headers.items():
+                        for key in headers.keys():
                             text = item.findtext(key, '').replace('\n', '<br>')
                             html += f"<td>{text}</td>"
                         html += "</tr>"
                     html += "</tbody>"
-
+                elif tab_name == "객실 정보":
+                    headers = {'roomtitle': '객실명', 'roomsize1': '크기(평)', 'roombasecount': '기본인원', 'roommaxcount': '최대인원', 'roomoffseasonminfee1': '비수기 주중 최소', 'roompeakseasonminfee1': '성수기 주중 최소'}
+                    html += "<thead><tr>"
+                    for header_ko in headers.values(): html += f"<th>{header_ko}</th>"
+                    html += "</tr></thead><tbody>"
+                    for item in items:
+                        html += "<tr>"
+                        for key in headers.keys():
+                            text = item.findtext(key, '').replace('\n', '<br>')
+                            html += f"<td>{text}</td>"
+                        html += "</tr>"
+                    html += "</tbody>"
                 # 반복 정보 처리
-                elif any(item.find('infoname') is not None for item in items):
+                elif tab_name == "반복정보":
                     for item in items:
                         infoname = item.findtext('infoname', '')
                         infotext = item.findtext('infotext', '').replace('\n', '<br>')
@@ -365,7 +371,6 @@ def create_tour_api_playwright_tab():
                 
                 common_data = parse_common_info_xml(xml_string)
                 
-                # 탭 가시성 제어
                 is_course = content_type_id == '25'
                 is_lodging = content_type_id == '32'
                 is_normal_repeat = not is_course and not is_lodging
@@ -376,13 +381,13 @@ def create_tour_api_playwright_tab():
                     detail_title: gr.update(value=f"### {common_data.get('title', '')}"),
                     detail_image: gr.update(value=common_data.get('firstimage')),
                     detail_overview: gr.update(value=common_data.get('overview')),
-                    detail_info_table: gr.update(value=parse_xml_to_html_table(xml_string, content_type_id)),
+                    detail_info_table: gr.update(value=parse_xml_to_html_table(xml_string, content_type_id, tab_name="공통정보")),
                     selected_item_info: info_for_tabs,
                     map_group: gr.update(visible=False),
                     intro_info_markdown: "소개정보 탭을 선택하여 정보를 확인하세요.",
-                    repeat_info_markdown: "반복정보 탭을 선택하여 정보를 확인하세요.",
-                    course_info_markdown: "코스 정보 탭을 선택하여 정보를 확인하세요.",
-                    room_info_markdown: "객실 정보 탭을 선택하여 정보를 확인하세요.",
+                    repeat_info_markdown: "" if not is_normal_repeat else "반복정보 탭을 선택하여 정보를 확인하세요.",
+                    course_info_markdown: "" if not is_course else "코스 정보 탭을 선택하여 정보를 확인하세요.",
+                    room_info_markdown: "" if not is_lodging else "객실 정보 탭을 선택하여 정보를 확인하세요.",
                     additional_images_gallery: [],
                     repeat_info_tab: gr.update(visible=is_normal_repeat),
                     course_info_tab: gr.update(visible=is_course),
@@ -430,7 +435,7 @@ def create_tour_api_playwright_tab():
                 }
                 return
 
-            html_table = parse_xml_to_html_table(xml_string, content_type_id)
+            html_table = parse_xml_to_html_table(xml_string, content_type_id, tab_name=tab_name)
 
             if tab_name == "소개정보": yield {intro_info_markdown: html_table}
             elif tab_name == "반복정보": yield {repeat_info_markdown: html_table}
@@ -513,7 +518,7 @@ def create_tour_api_playwright_tab():
 
         results_output.select(fn=show_initial_details, inputs=[search_params, current_gallery_data, current_page], outputs=detail_outputs, queue=True)
 
-        detail_tabs.select(fn=update_tab_content, inputs=[selected_item_info], outputs=[intro_info_markdown, repeat_info_markdown, additional_images_gallery], queue=True)
+        detail_tabs.select(fn=update_tab_content, inputs=[selected_item_info], outputs=[intro_info_markdown, repeat_info_markdown, course_info_markdown, room_info_markdown, additional_images_gallery], queue=True)
 
         show_map_button.click(fn=show_map, inputs=[selected_item_info], outputs=[map_html]).then(lambda: gr.update(visible=True), outputs=[map_group])
         close_map_button.click(lambda: gr.update(visible=False), outputs=[map_group])
