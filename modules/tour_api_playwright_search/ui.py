@@ -462,7 +462,8 @@ def create_tour_api_playwright_tab():
 
         detail_outputs = [status_output, detail_view_column, detail_title, detail_image, detail_overview, 
                           detail_info_table, selected_item_info, map_group, 
-                          intro_info_markdown, repeat_info_markdown, additional_images_gallery]
+                          intro_info_markdown, repeat_info_markdown, course_info_markdown, room_info_markdown, additional_images_gallery,
+                          repeat_info_tab, course_info_tab, room_info_tab]
 
         api_tabs.change(lambda: gr.update(interactive=True), outputs=[export_csv_button])
 
