@@ -410,8 +410,8 @@ def create_tour_api_playwright_tab():
             yield {
                 intro_info_markdown: "로딩 중..." if tab_name == "소개정보" else gr.update(),
                 repeat_info_markdown: "로딩 중..." if tab_name == "반복정보" else gr.update(),
-                course_info_markdown: "로딩 중..." if tab_name == "코스 정보" else gr.update(),
-                room_info_markdown: "로딩 중..." if tab_name == "객실 정보" else gr.update(),
+                course_info_markdown: "로딩 중..." if tab_name == "코스정보" else gr.update(),
+                room_info_markdown: "로딩 중..." if tab_name == "객실정보" else gr.update(),
                 additional_images_gallery: [] if tab_name == "추가이미지" else gr.update()
             }
             
@@ -427,24 +427,29 @@ def create_tour_api_playwright_tab():
             else:
                 xml_string = await scraper.get_item_detail_xml(args)
             
+            update_dict = {k: gr.update() for k in [intro_info_markdown, repeat_info_markdown, course_info_markdown, room_info_markdown, additional_images_gallery]}
+
             if "<error>" in xml_string:
-                update_dict = {k: gr.update() for k in [intro_info_markdown, repeat_info_markdown, course_info_markdown, room_info_markdown, additional_images_gallery]}
-                if tab_name == "소개정보": update_dict[intro_info_markdown] = xml_string
-                elif tab_name == "반복정보": update_dict[repeat_info_markdown] = xml_string
-                elif tab_name == "코스정보": update_dict[course_info_markdown] = xml_string
-                elif tab_name == "객실정보": update_dict[room_info_markdown] = xml_string
+                tab_map = { "소개정보": intro_info_markdown, "반복정보": repeat_info_markdown, "코스정보": course_info_markdown, "객실정보": room_info_markdown }
+                if tab_name in tab_map:
+                    update_dict[tab_map[tab_name]] = f"```xml\n{xml_string}\n```"
                 yield update_dict
                 return
 
-            html_table = parse_xml_to_html_table(xml_string, content_type_id, tab_name=tab_name)
-            images = parse_images_xml(xml_string) if tab_name == "추가이미지" else None
-
-            update_dict = {k: gr.update() for k in [intro_info_markdown, repeat_info_markdown, course_info_markdown, room_info_markdown, additional_images_gallery]}
-            if tab_name == "소개정보": update_dict[intro_info_markdown] = html_table
-            elif tab_name == "반복정보": update_dict[repeat_info_markdown] = html_table
-            elif tab_name == "코스정보": update_dict[course_info_markdown] = html_table
-            elif tab_name == "객실정보": update_dict[room_info_markdown] = html_table
-            elif tab_name == "추가이미지": update_dict[additional_images_gallery] = images
+            if tab_name == "소개정보" or tab_name == "반복정보":
+                html_table = parse_xml_to_html_table(xml_string, content_type_id, tab_name=tab_name)
+                if tab_name == "소개정보":
+                    update_dict[intro_info_markdown] = html_table
+                else:
+                    update_dict[repeat_info_markdown] = html_table
+            elif tab_name == "코스정보":
+                update_dict[course_info_markdown] = f"```xml\n{xml_string}\n```"
+            elif tab_name == "객실정보":
+                update_dict[room_info_markdown] = f"```xml\n{xml_string}\n```"
+            elif tab_name == "추가이미지":
+                images = parse_images_xml(xml_string)
+                update_dict[additional_images_gallery] = images
+            
             yield update_dict
 
         def show_map(item_info):
