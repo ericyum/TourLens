@@ -112,8 +112,9 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                         tab_locator = page.locator(f'button:has-text("{tab_name}")')
                         
                         try:
-                            # 탭이 나타날 때까지 최대 2초 대기
-                            await tab_locator.wait_for(state='visible', timeout=2000)
+                            # [수정] 더 안정적인 expect 구문과 넉넉한 타임아웃(5초)으로 변경
+                            await expect(tab_locator).to_be_visible(timeout=60000)
+                            
                             print(f"    - {tab_name} 탭으로 이동 및 정보 수집 중...")
                             initial_xml = await xml_textarea_locator.input_value()
                             await tab_locator.click()
