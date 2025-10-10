@@ -32,7 +32,7 @@ async def close_page_context(p, browser):
 # --- Common Navigation & Scraping Logic ---
 
 # [수정됨] XML 업데이트 대기 로직 개선
-async def wait_for_xml_update(page: Page, old_xml: str):
+async def wait_for_xml_update(page: Page, old_xml: str, timeout: int = 30000):
     """Waits for the ResponseXML textarea to update with new, non-empty content."""
     await page.wait_for_function(
         """(oldXml) => {
@@ -40,7 +40,7 @@ async def wait_for_xml_update(page: Page, old_xml: str):
             return el && el.value !== oldXml && el.value.trim().length > 0;
         }""",
         arg=old_xml,
-        timeout=0
+        timeout=timeout
     )
 
 # [최종 개선] 최소 클릭 페이지 이동 로직
@@ -249,19 +249,49 @@ def parse_xml_to_ordered_list(xml_string: str) -> list[tuple[str, str]]:
                 if url:
                     details.append(('originimgurl', url))
         # '반복정보'나 '소개정보'와 같이 여러 정보가 오는 경우
-        elif len(items) > 1 and any(item.find('infoname') is not None for item in items):
+        elif items and any(item.find('infoname') is not None for item in items):
              for item in items:
                 infoname = item.findtext('infoname')
                 infotext = item.findtext('infotext')
-                if infoname and infotext:
-                     details.append((infoname, infotext))
+                if infoname or infotext:
+                    key = infoname if infoname else "반복정보_내용"
+                    value = infotext if infotext else ""
+                    details.append((key, value))
         # '공통정보'와 같이 단일 아이템인 경우
         else:
             item_element = items[0]
             for child in item_element:
                 if child.text and child.text.strip():
-                    clean_text = re.sub(r'<.*?>', '', child.text)
+                    # [수정] CSV 저장 오류 방지를 위해 줄바꿈 등 모든 공백 문자를 한 칸 공백으로 치환
+                    clean_text = re.sub(r'\s+', ' ', child.text)
+                    clean_text = re.sub(r'<.*?>', '', clean_text)
                     details.append((child.tag, clean_text.strip()))
         return details
+    except (ET.ParseError, TypeError):
+        return []
+
+# [신규] 코스, 객실 정보 등 다중 행 파싱을 위한 함수
+def parse_xml_to_dict_list(xml_string: str) -> list[dict]:
+    """Parses XML with multiple items into a list of dictionaries."""
+    if not xml_string or "<error>" in xml_string or not xml_string.strip().startswith('<?xml'):
+        return []
+    try:
+        root = ET.fromstring(xml_string)
+        items = root.findall('.//body/items/item')
+        if not items:
+            return []
+        
+        results_list = []
+        for item_element in items:
+            details = {}
+            for child in item_element:
+                if child.text and child.text.strip():
+                    # 기존 정제 로직 사용
+                    clean_text = re.sub(r'\s+', ' ', child.text)
+                    clean_text = re.sub(r'<.*?>', '', clean_text)
+                    details[child.tag] = clean_text.strip()
+            if details:
+                results_list.append(details)
+        return results_list
     except (ET.ParseError, TypeError):
         return []

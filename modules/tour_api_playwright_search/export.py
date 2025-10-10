@@ -10,16 +10,15 @@ import datetime
 
 # Relative imports from within the same module
 from . import scraper
-from .common import parse_xml_to_ordered_list, wait_for_xml_update
+from .common import parse_xml_to_ordered_list, wait_for_xml_update, parse_xml_to_dict_list
 
 async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=True)):
-    """[최종 수정 4] 사용자의 요청에 따라 상세한 로그와 스크린샷 피드백 기능을 추가한 버전입니다."""
+    """[최종 리팩토링] 다중 행 데이터 타입(여행 코스, 숙박)을 지원하고 모든 안정성 로직이 포함된 최종 버전입니다."""
     
     # --- 0. 설정 및 피드백 디렉토리 생성 ---
     ITEMS_PER_PAGE = 12
     all_attraction_details = []
     
-    # 피드백 이미지 저장 경로 설정
     feedback_dir = os.path.join("Temp", "export_feedback")
     os.makedirs(feedback_dir, exist_ok=True)
     print(f"피드백 스크린샷은 '{feedback_dir}' 폴더에 저장됩니다.")
@@ -32,7 +31,7 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
     simple_search_keys, common_info_keys, intro_info_keys, repeat_info_keys = [], [], [], []
     seen_keys = set()
     def add_key(key, key_list):
-        if key not in seen_keys:
+        if key and key not in seen_keys:
             seen_keys.add(key)
             key_list.append(key)
 
@@ -63,22 +62,24 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
         # --- 2. 페이지 순회 (Outer Loop) ---
         for page_num in progress.tqdm(range(1, total_pages + 1), desc="페이지 처리 중"):
             print(f"\n--- {page_num} 페이지 처리를 시작합니다. ---")
-            await page.screenshot(path=get_screenshot_path(f"{page_num}_00_page_start.png"))
             await scraper.go_to_page(page, page_num, total_pages)
+
+            if page_num > 1:
+                print(f"    페이지 안정화를 위해 새로고침, 재검색, 페이지 재이동을 수행합니다...")
+                await page.reload(wait_until="networkidle")
+                await scraper.perform_initial_search_for_export(page, **initial_params)
+                await scraper.go_to_page(page, page_num, total_pages)
+                print(f"    안정화 완료.")
+
             await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=15000)
             print(f"{page_num} 페이지로 이동 완료.")
-            await page.screenshot(path=get_screenshot_path(f"{page_num}_01_page_loaded.png"))
             
             items_on_this_page_data = await scraper.get_items_from_page(page, page_num, total_pages)
             item_count_on_page = len(items_on_this_page_data)
             print(f"{page_num} 페이지에서 {item_count_on_page}개의 아이템을 확인했습니다.")
 
-            item_locators = page.locator("ul.gallery-list > li > a")
-
             # --- 3. 페이지 내 아이템 순회 (Inner Loop) ---
             for i in range(item_count_on_page):
-                # [수정] 미리 받아온 데이터에서 content_id를 사용하고, 로케이터는 인덱스로 직접 지정
-                current_item_locator = item_locators.nth(i)
                 content_id = items_on_this_page_data[i].get('contentid')
                 if not content_id:
                     print(f"  [{i+1}/{item_count_on_page}] 콘텐츠 ID를 찾을 수 없어 건너뜁니다.")
@@ -87,100 +88,155 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                 print(f"  [{i+1}/{item_count_on_page}] 콘텐츠 ID '{content_id}' 처리를 시작합니다.")
 
                 try:
-                    # --- 4. 아이템 클릭 및 상세 정보 스크래핑 ---
-                    await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_before_click.png"))
+                    # --- 4. 아이템 클릭 및 모든 탭 XML 수집 ---
+                    current_item_locator = page.locator("ul.gallery-list > li > a").nth(i)
                     await expect(current_item_locator).to_be_visible(timeout=10000)
                     await current_item_locator.click()
-                    print(f"    '{content_id}' 클릭 완료. 상세 정보 로딩을 기다립니다...")
-
+                    
                     xml_textarea_locator = page.locator("textarea#ResponseXML")
                     await expect(xml_textarea_locator).to_have_value(re.compile(f"<contentid>{content_id}</contentid>"), timeout=30000)
-                    print("    상세 정보 로딩 완료.")
-                    await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_after_click_details_loaded.png"))
+                    await expect(page.locator('button:has-text("공통정보")')).to_be_visible(timeout=10000)
+                    print("    상세 정보 UI 로딩 완료.")
 
-                    combined_details = {}
                     xml_sources = {}
-                    tabs_to_scrape = [("공통정보", common_info_keys), ("소개정보", intro_info_keys), ("반복정보", repeat_info_keys)]
+                    base_info_from_list = next((item for item in items_on_this_page_data if item['contentid'] == content_id), {})
+                    content_type_id = base_info_from_list.get('contenttypeid')
 
-                    # 공통정보
-                    print("    - 공통정보 수집 중...")
-                    xml_sources["공통정보"] = await xml_textarea_locator.input_value()
+                    tabs_to_process = ["공통정보", "소개정보"]
+                    if content_type_id == '25': tabs_to_process.append("코스 정보")
+                    elif content_type_id == '32': tabs_to_process.append("객실 정보")
+                    else: tabs_to_process.append("반복정보")
 
-                    # 소개정보, 반복정보
-                    for tab_name, _ in tabs_to_scrape[1:]:
-                        print(f"    - {tab_name} 탭 확인 중...")
-                        tab_locator = page.locator(f'button:has-text("{tab_name}")')
-                        
+                    for tab_name in tabs_to_process:
                         try:
-                            # [수정] 더 안정적인 expect 구문과 넉넉한 타임아웃(5초)으로 변경
-                            await expect(tab_locator).to_be_visible(timeout=10000)
-                            
+                            if tab_name == "공통정보":
+                                print(f"    - {tab_name} 수집 중...")
+                                new_xml = await xml_textarea_locator.input_value()
+                                if "<title>" not in new_xml: raise ValueError("공통정보 XML에 title 태그가 없습니다.")
+                                xml_sources[tab_name] = new_xml
+                                continue
+
+                            print(f"    - {tab_name} 탭 확인 중...")
+                            tab_locator = page.locator(f'button:has-text("{tab_name}")')
+                            if not await tab_locator.is_visible(timeout=5000):
+                                print(f"    - '{tab_name}' 탭이 존재하지 않아 건너뜁니다.")
+                                continue
+
                             print(f"    - {tab_name} 탭으로 이동 및 정보 수집 중...")
                             initial_xml = await xml_textarea_locator.input_value()
                             await tab_locator.click()
                             await wait_for_xml_update(page, initial_xml)
-                            xml_sources[tab_name] = await xml_textarea_locator.input_value()
-                            await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_tab_{tab_name}.png"))
-                        except Exception:
-                            print(f"    - {tab_name} 탭이 없거나 시간 내에 나타나지 않아 건너뜁니다.")
+                            new_xml = await xml_textarea_locator.input_value()
 
-                    print("    모든 탭 정보 수집 완료. 공통정보 탭으로 복귀하여 상태를 초기화합니다.")
+                            # 데이터 유효성 검증
+                            if tab_name == "소개정보":
+                                key_tags = {'15':'<eventstartdate>','28':'<infocenterleports>','14':'<infocenterculture>','12':'<infocenter>','32':'<checkintime>','25':'<distance>','38':'<infocentershopping>','39':'<firstmenu>'} 
+                                standard_tag = key_tags.get(content_type_id, '<item>')
+                                if standard_tag not in new_xml: raise ValueError(f"소개정보 XML 유효성 검증 실패 (기준 태그: {standard_tag})")
+                            elif tab_name == "반복정보":
+                                if "<totalCount>0</totalCount>" not in new_xml and ("<infoname>" not in new_xml and "<infotext>" not in new_xml): raise ValueError("반복정보 XML에 infoname과 infotext 태그가 모두 없어 재시도합니다.")
+                            
+                            xml_sources[tab_name] = new_xml
+                        except Exception as e:
+                            print(f"    - '{tab_name}' 탭 처리 실패. 1초 후 재시도합니다... 오류: {e}")
+                            await page.wait_for_timeout(1000)
+                            try:
+                                if tab_name == "공통정보":
+                                    new_xml = await xml_textarea_locator.input_value()
+                                    if "<title>" not in new_xml: raise ValueError("재시도 실패: title 태그 없음")
+                                else:
+                                    initial_xml = await xml_textarea_locator.input_value()
+                                    await tab_locator.click()
+                                    await wait_for_xml_update(page, initial_xml)
+                                    new_xml = await xml_textarea_locator.input_value()
+                                xml_sources[tab_name] = new_xml
+                                print(f"    - '{tab_name}' 탭 재시도 성공.")
+                            except Exception as e2:
+                                print(f"    - '{tab_name}' 탭 재시도 실패. 건너뜁니다. 오류: {e2}")
+
+                    # --- 4b. 상태 초기화 ---
                     common_info_tab_locator = page.locator('button:has-text("공통정보")')
-                    if await common_info_tab_locator.is_visible():
-                        current_xml_before_reset = await xml_textarea_locator.input_value()
-                        await common_info_tab_locator.click()
-                        # 공통정보 탭으로 돌아간 후 XML이 다시 로드될 때까지 기다림
-                        await wait_for_xml_update(page, current_xml_before_reset)
-                        print("    공통정보 탭으로 복귀 완료.")
-                    else:
-                        print("    공통정보 탭을 찾을 수 없어 상태를 초기화하지 못했습니다.")
-
-                    # --- 5. 수집된 모든 XML 파싱 ---
-                    initial_item_xml = next((item['initial_item_xml'] for item in items_on_this_page_data if item['contentid'] == content_id), None)
-                    if initial_item_xml:
-                        root = ET.fromstring(f"<root>{initial_item_xml}</root>")
+                    if await common_info_tab_locator.is_visible(timeout=5000):
+                        parent_li = common_info_tab_locator.locator("xpath=..")
+                        if 'on' not in (await parent_li.get_attribute('class') or ''):
+                            initial_xml = await xml_textarea_locator.input_value()
+                            await common_info_tab_locator.click()
+                            await wait_for_xml_update(page, initial_xml)
+                    
+                    # --- 5. 수집된 XML 파싱 및 행 생성 ---
+                    base_details = {}
+                    # 목록에서 가져온 초기 정보 추가
+                    initial_item_data = next((item for item in items_on_this_page_data if item['contentid'] == content_id), None)
+                    if initial_item_data and 'initial_item_xml' in initial_item_data:
+                        root = ET.fromstring(f"<root>{initial_item_data['initial_item_xml']}</root>")
                         simple_item_element = root.find('item')
                         if simple_item_element is not None:
                             for child in simple_item_element:
                                 if child.text and child.text.strip():
                                     add_key(child.tag, simple_search_keys)
-                                    combined_details[child.tag] = child.text.strip()
-
-                    for tab_name, key_list in tabs_to_scrape:
+                                    base_details[child.tag] = child.text.strip()
+                    
+                    # 공통정보, 소개정보 파싱하여 base_details에 추가
+                    for tab_name in ["공통정보", "소개정보"]:
                         item_details_list = parse_xml_to_ordered_list(xml_sources.get(tab_name, ""))
                         for key, value in item_details_list:
                             original_key = key
                             counter = 1
-                            while key in combined_details:
+                            while key in base_details:
                                 counter += 1
                                 key = f"{original_key}_{counter}"
-                            add_key(key, key_list)
-                            combined_details[key] = value
-                    all_attraction_details.append(combined_details)
+                            add_key(key, common_info_keys if tab_name == "공통정보" else intro_info_keys)
+                            base_details[key] = value
+
+                    # contenttypeid에 따라 분기 처리
+                    if content_type_id == '25' or content_type_id == '32':
+                        multi_row_tab_name = "코스 정보" if content_type_id == '25' else "객실 정보"
+                        sub_items = parse_xml_to_dict_list(xml_sources.get(multi_row_tab_name, ""))
+                        if sub_items:
+                            for sub_item in sub_items:
+                                new_row = base_details.copy()
+                                new_row.update(sub_item)
+                                all_attraction_details.append(new_row)
+                                for key in sub_item.keys(): add_key(key, repeat_info_keys)
+                        else:
+                            all_attraction_details.append(base_details)
+                    else:
+                        item_details_list = parse_xml_to_ordered_list(xml_sources.get("반복정보", ""))
+                        for key, value in item_details_list:
+                            original_key = key
+                            counter = 1
+                            while key in base_details:
+                                counter += 1
+                                key = f"{original_key}_{counter}"
+                            add_key(key, repeat_info_keys)
+                            base_details[key] = value
+                        all_attraction_details.append(base_details)
+                    
                     print("    XML 파싱 및 데이터 저장 완료.")
 
                     # --- 6. 목록으로 돌아가기 ---
-                    print("    목록 페이지로 돌아갑니다...")
-                    await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_before_goback.png"))
                     await page.go_back()
-                    # [수정] DOM이 완전히 로드될 때까지 기다리는 것으로 변경하여 안정성 향상
-                    await page.wait_for_load_state('domcontentloaded')
-                    print("    목록 페이지로 복귀 완료.")
-                    await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_after_goback.png"))
+                    await page.wait_for_load_state('networkidle')
 
                 except Exception as e:
                     print(f"콘텐츠 ID '{content_id}' 처리 중 오류 발생: {e}. 다음 항목으로 넘어갑니다.")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_error.png"))
                     try:
-                        # [수정] 가장 안정적인 복구 방법: 처음부터 다시 검색하여 현재 페이지로 이동
                         print(f"복구를 시도합니다. {page_num} 페이지의 처음부터 다시 로드합니다.")
                         await page.goto(scraper.BASE_URL, wait_until="load")
-                        await page.wait_for_load_state('domcontentloaded') # 페이지 로드 대기 추가
+                        await page.wait_for_load_state('domcontentloaded')
                         await scraper.perform_initial_search_for_export(page, **initial_params)
                         await scraper.go_to_page(page, page_num, total_pages)
                         print("페이지 재로드 및 복구 완료. 다음 아이템으로 진행합니다.")
                     except Exception as recovery_e:
                         print(f"치명적인 복구 오류 발생: {recovery_e}. 이 아이템을 건너뛰고 계속합니다.")
+                        try:
+                            log_file_path = "unrecoverable_error_log.txt"
+                            log_content = f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {page_num} 페이지의 {i + 1} 번째 관광 데이터(콘텐츠 ID: {content_id})를 건너뛰었습니다. 오류: {recovery_e}\n"
+                            with open(log_file_path, "a", encoding="utf-8") as f:
+                                f.write(log_content)
+                        except Exception as log_e:
+                            print(f"    - 파일 로그 작성에 실패했습니다: {log_e}")
                     continue
 
     finally:
