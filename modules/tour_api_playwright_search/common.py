@@ -180,8 +180,29 @@ async def scrape_item_detail_xml(page: Page, params):
         await tab_button_locator.click()
         
         try:
-            # XML 내용이 바뀔 때까지 대기
-            await wait_for_xml_update(page, initial_xml)
+            # XML 내용이 바뀔 때까지 대기 (기본 타임아웃 60초로 증가)
+            await wait_for_xml_update(page, initial_xml, timeout=60000)
+
+            # [버그 수정] 코스/객실 정보 탭은 XML이 단계적으로 업데이트될 수 있어,
+            # 핵심 태그가 나타날 때까지 추가로 대기하여 안정성 확보
+            content_type_id = params.get("contenttypeid")
+            if requested_tab == "코스정보" and content_type_id == '25':
+                await page.wait_for_function(
+                    """() => {
+                        const el = document.querySelector('textarea#ResponseXML');
+                        return el && (el.value.includes('<subname>') || el.value.includes('<totalCount>0</totalCount>'));
+                    }""",
+                    timeout=30000
+                )
+            elif requested_tab == "객실정보" and content_type_id == '32':
+                await page.wait_for_function(
+                    """() => {
+                        const el = document.querySelector('textarea#ResponseXML');
+                        return el && (el.value.includes('<roomtitle>') || el.value.includes('<totalCount>0</totalCount>'));
+                    }""",
+                    timeout=30000
+                )
+
             # 바뀐 XML 내용을 반환
             return await xml_textarea_locator.input_value()
         except Exception:
@@ -191,25 +212,6 @@ async def scrape_item_detail_xml(page: Page, params):
     except Exception as e:
         await page.screenshot(path=f"debug_scrape_error_contentid_{params.get('contentid')}.png")
         raise e
-    finally:
-        # [수정됨] 다음 작업을 위해 상태를 초기화하는 로직을 더욱 안정적으로 강화
-        try:
-            common_info_button = page.locator('button:has-text("공통정보")')
-            # 5초간 버튼이 나타나는지 확인
-            if await common_info_button.is_visible(timeout=5000):
-                # 버튼의 부모 li 태그를 찾아 'on' 클래스가 있는지 확인 (이미 선택된 상태인지)
-                parent_li = common_info_button.locator("xpath=..")
-                class_attribute = await parent_li.get_attribute('class') or ''
-                
-                # '공통정보'가 이미 선택된 상태('on')가 아니라면 클릭하여 상태 초기화
-                if 'on' not in class_attribute:
-                    initial_xml = await page.locator("textarea#ResponseXML").input_value()
-                    await common_info_button.click(timeout=5000)
-                    # 상태가 실제로 초기화될 때까지(XML이 바뀔 때까지) 기다림
-                    await wait_for_xml_update(page, initial_xml)
-        except Exception:
-            # 이 작업은 정리 목적이므로, 실패하더라도 전체 프로세스에 영향을 주지 않고 무시하고 넘어갑니다.
-            pass
 
 def parse_xml_to_dict(xml_string: str) -> dict:
     """Parses an XML string from the API into a flat dictionary."""

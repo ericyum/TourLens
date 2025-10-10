@@ -338,7 +338,8 @@ def create_tour_api_playwright_tab():
             
             selected_item = g_data[evt.index]
             title = selected_item['title']
-            content_type_id = selected_item.get('contenttypeid')
+            # Defensive coding: Ensure content_type_id is a string and stripped of whitespace
+            content_type_id = str(selected_item.get('contenttypeid') or '').strip()
             
             info_for_tabs = s_params.copy()
             if info_for_tabs.get("province") == "전국": info_for_tabs["province"] = None
@@ -368,6 +369,7 @@ def create_tour_api_playwright_tab():
                 
                 common_data = parse_common_info_xml(xml_string)
                 
+                # Explicitly define visibility for each tab type
                 is_course = content_type_id == '25'
                 is_lodging = content_type_id == '32'
                 is_normal_repeat = not is_course and not is_lodging
@@ -386,6 +388,7 @@ def create_tour_api_playwright_tab():
                     course_info_markdown: "" if not is_course else "코스 정보 탭을 선택하여 정보를 확인하세요.",
                     room_info_markdown: "" if not is_lodging else "객실 정보 탭을 선택하여 정보를 확인하세요.",
                     additional_images_gallery: [],
+                    # Apply the logic to control tab visibility
                     repeat_info_tab: gr.update(visible=is_normal_repeat),
                     course_info_tab: gr.update(visible=is_course),
                     room_info_tab: gr.update(visible=is_lodging),
@@ -523,3 +526,5 @@ def create_tour_api_playwright_tab():
 
         show_map_button.click(fn=show_map, inputs=[selected_item_info], outputs=[map_html]).then(lambda: gr.update(visible=True), outputs=[map_group])
         close_map_button.click(lambda: gr.update(visible=False), outputs=[map_group])
+
+    return demo
