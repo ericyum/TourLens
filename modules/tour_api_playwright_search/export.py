@@ -73,10 +73,17 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
             item_count_on_page = len(items_on_this_page_data)
             print(f"{page_num} 페이지에서 {item_count_on_page}개의 아이템을 확인했습니다.")
 
+            item_locators = page.locator("ul.gallery-list > li > a")
+
             # --- 3. 페이지 내 아이템 순회 (Inner Loop) ---
             for i in range(item_count_on_page):
-                current_item_locator = page.locator("ul.gallery-list > li > a").nth(i)
-                content_id = await current_item_locator.locator("strong[name]").get_attribute("name")
+                # [수정] 미리 받아온 데이터에서 content_id를 사용하고, 로케이터는 인덱스로 직접 지정
+                current_item_locator = item_locators.nth(i)
+                content_id = items_on_this_page_data[i].get('contentid')
+                if not content_id:
+                    print(f"  [{i+1}/{item_count_on_page}] 콘텐츠 ID를 찾을 수 없어 건너뜁니다.")
+                    continue
+
                 print(f"  [{i+1}/{item_count_on_page}] 콘텐츠 ID '{content_id}' 처리를 시작합니다.")
 
                 try:
@@ -104,18 +111,28 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                         print(f"    - {tab_name} 탭 확인 중...")
                         tab_locator = page.locator(f'button:has-text("{tab_name}")')
                         
-                        if await tab_locator.is_visible():
+                        try:
+                            # 탭이 나타날 때까지 최대 2초 대기
+                            await tab_locator.wait_for(state='visible', timeout=2000)
                             print(f"    - {tab_name} 탭으로 이동 및 정보 수집 중...")
                             initial_xml = await xml_textarea_locator.input_value()
                             await tab_locator.click()
                             await wait_for_xml_update(page, initial_xml)
                             xml_sources[tab_name] = await xml_textarea_locator.input_value()
                             await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_tab_{tab_name}.png"))
-                        else:
-                            print(f"    - {tab_name} 탭이 없어 건너뜁니다.")
+                        except Exception:
+                            print(f"    - {tab_name} 탭이 없거나 시간 내에 나타나지 않아 건너뜁니다.")
 
-                    print("    모든 탭 정보 수집 완료. 공통정보 탭으로 복귀합니다.")
-                    await page.locator('button:has-text("공통정보")').click()
+                    print("    모든 탭 정보 수집 완료. 공통정보 탭으로 복귀하여 상태를 초기화합니다.")
+                    common_info_tab_locator = page.locator('button:has-text("공통정보")')
+                    if await common_info_tab_locator.is_visible():
+                        current_xml_before_reset = await xml_textarea_locator.input_value()
+                        await common_info_tab_locator.click()
+                        # 공통정보 탭으로 돌아간 후 XML이 다시 로드될 때까지 기다림
+                        await wait_for_xml_update(page, current_xml_before_reset)
+                        print("    공통정보 탭으로 복귀 완료.")
+                    else:
+                        print("    공통정보 탭을 찾을 수 없어 상태를 초기화하지 못했습니다.")
 
                     # --- 5. 수집된 모든 XML 파싱 ---
                     initial_item_xml = next((item['initial_item_xml'] for item in items_on_this_page_data if item['contentid'] == content_id), None)
@@ -145,9 +162,8 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                     print("    목록 페이지로 돌아갑니다...")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_before_goback.png"))
                     await page.go_back()
-                    # [수정] SPA의 불안정한 상태 복원을 감안하여, 핵심 UI 요소가 보일 때까지 충분히 대기
-                    await expect(page.locator("div.paging")).to_be_visible(timeout=30000)
-                    await expect(page.locator("ul.gallery-list")).to_be_visible(timeout=15000)
+                    # [수정] DOM이 완전히 로드될 때까지 기다리는 것으로 변경하여 안정성 향상
+                    await page.wait_for_load_state('domcontentloaded')
                     print("    목록 페이지로 복귀 완료.")
                     await page.screenshot(path=get_screenshot_path(f"{page_num}_{i+1}_after_goback.png"))
 
@@ -158,6 +174,7 @@ async def export_details_to_csv(search_params, progress=gr.Progress(track_tqdm=T
                         # [수정] 가장 안정적인 복구 방법: 처음부터 다시 검색하여 현재 페이지로 이동
                         print(f"복구를 시도합니다. {page_num} 페이지의 처음부터 다시 로드합니다.")
                         await page.goto(scraper.BASE_URL, timeout=0, wait_until="networkidle")
+                        await page.wait_for_load_state('domcontentloaded') # 페이지 로드 대기 추가
                         await scraper.perform_initial_search_for_export(page, **initial_params)
                         await scraper.go_to_page(page, page_num, total_pages)
                         print("페이지 재로드 및 복구 완료. 다음 아이템으로 진행합니다.")
